@@ -19,6 +19,7 @@ import java.util.zip.ZipOutputStream
 internal object PluginSharedLibraries : AbstractTestPoint() {
     override fun beforeConsoleStartup() {
         if (System.getenv("CI").orEmpty().toBoolean()) {
+            println("CI env")
             File("config/Console/PluginDependencies.yml").writeText(
                 "repoLoc: 'https://repo.maven.apache.org/maven2'"
             )

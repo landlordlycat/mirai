@@ -60,7 +60,25 @@ internal class BuiltInJvmPluginLoaderImpl(
         )
         logger.verbose { "Plugin shared libraries: " + PluginManager.pluginSharedLibrariesFolder }
         PluginManager.pluginSharedLibrariesFolder.listFiles()?.asSequence().orEmpty()
-            // .onEach { logger.debug { "Peek $it in shared libraries" } }
+            .onEach { logger.debug { "Peek $it in shared libraries" } }
+            .filter { file ->
+                if (file.isDirectory) {
+                    return@filter true
+                }
+                if (!file.exists()) {
+                    logger.debug { "Skipped $file because file not exists" }
+                    return@filter false
+                }
+                if (file.isFile) {
+                    if (file.extension == "jar") {
+                        return@filter true
+                    }
+                    logger.debug { "Skipped $file because extension <${file.extension}> != jar" }
+                    return@filter false
+                }
+                logger.debug { "Skipped $file because unknown error" }
+                return@filter false
+            }
             .filter { it.isDirectory || (it.isFile && it.extension == "jar") }
             .forEach { pt ->
                 classLoader.addLib(pt)
