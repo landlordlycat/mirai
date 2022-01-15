@@ -82,6 +82,42 @@ public interface PluginManager {
      */
     public val pluginsConfigFolder: File
 
+    /**
+     * 插件运行时依赖存放路径 [Path]
+     *
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`
+     *
+     * @since 2.11
+     */
+    public val pluginLibrariesPath: Path
+
+    /**
+     * 插件运行时依赖存放路径 [File]
+     *
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`
+     *
+     * @since 2.11
+     */
+    public val pluginLibrariesFolder: File
+
+    /**
+     * 插件运行时依赖存放路径 [Path], 该路径下的依赖由全部插件共享
+     *
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-shared-libraries`
+     *
+     * @since 2.11
+     */
+    public val pluginSharedLibrariesPath: Path
+
+    /**
+     * 插件运行时依赖存放路径 [File], 该路径下的依赖由全部插件共享
+     *
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-shared-libraries`
+     *
+     * @since 2.11
+     */
+    public val pluginSharedLibrariesFolder: File
+
     // endregion
 
 
