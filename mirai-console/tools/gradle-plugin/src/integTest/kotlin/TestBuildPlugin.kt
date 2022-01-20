@@ -10,14 +10,40 @@
 package net.mamoe.mirai.console.gradle
 
 import org.junit.jupiter.api.Test
+import java.util.zip.ZipFile
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class TestBuildPlugin : AbstractTest() {
 
     @Test
     fun `can build plugin`() {
+        tempDir.resolve("build.gradle").appendText(
+            """
+            dependencies {
+                api "com.zaxxer:SparseBitSet:1.2"
+                implementation "com.google.code.gson:gson:2.8.9"
+            }
+        """.trimIndent()
+        )
         gradleRunner()
             .withArguments("buildPlugin", "--stacktrace")
             .build()
+        val jar = tempDir.resolve("build/libs").listFiles()!!.first { it.name.endsWith(".mirai.jar") }
+        ZipFile(jar).use { zipFile ->
+            val dpPrivate = zipFile.getInputStream(
+                zipFile.getEntry("META-INF/mirai-console-plugin/dependencies-private.txt")
+            ).use { it.readBytes().decodeToString() }
+            val dpShared = zipFile.getInputStream(
+                zipFile.getEntry("META-INF/mirai-console-plugin/dependencies-shared.txt")
+            ).use { it.readBytes().decodeToString() }
+
+            assertTrue { dpShared.contains("com.zaxxer:SparseBitSet:1.2") }
+            assertFalse { dpShared.contains("com.google.code.gson:gson") }
+
+            assertTrue { dpPrivate.contains("com.zaxxer:SparseBitSet:1.2") }
+            assertTrue { dpPrivate.contains("com.google.code.gson:gson:2.8.9") }
+        }
     }
 
 }

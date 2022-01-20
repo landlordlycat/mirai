@@ -113,12 +113,16 @@ public class MiraiConsoleGradlePlugin : Plugin<Project> {
         fun registerBuildPluginTask(target: KotlinTarget, isSingleTarget: Boolean) {
             tasks.create(
                 "buildPlugin".wrapNameWithPlatform(target, isSingleTarget),
+                BuildMiraiPluginNew::class.java
+            ).init()
+            tasks.create(
+                "buildPluginLegacy".wrapNameWithPlatform(target, isSingleTarget),
                 BuildMiraiPluginTask::class.java,
                 target
             ).apply shadow@{
                 group = "mirai"
 
-                archiveExtension.set("mirai.jar")
+                archiveExtension.set("legacy.mirai.jar")
 
                 val compilations = target.compilations.filter { it.name == MAIN_COMPILATION_NAME }
 
