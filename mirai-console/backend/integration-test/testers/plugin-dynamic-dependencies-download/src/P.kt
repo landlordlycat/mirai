@@ -13,6 +13,9 @@ import net.mamoe.mirai.console.extension.PluginComponentStorage
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 
+/*
+PluginDynamicDependenciesDownload: 测试动态运行时下载
+ */
 internal object P : KotlinPlugin(
     JvmPluginDescription(
         id = "net.mamoe.tester.plugin-dynamic-dependencies-download",

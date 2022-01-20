@@ -19,8 +19,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertSame
 
 /*
-MCITSelfTestPlugin: 用于测试 Integration-test 可正常加载
-@see /test/testpoints/MCITBSelfAssertions
+PluginDependOnOther: 测试插件依赖其他插件的情况
  */
 public object PluginDependOnOther : KotlinPlugin(
     JvmPluginDescription(

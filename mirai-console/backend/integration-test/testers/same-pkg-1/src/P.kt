@@ -12,6 +12,9 @@ package samepkg
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 
+/*
+same-pkg-1: 测试包名一样时插件可以正常加载
+ */
 internal object P : KotlinPlugin(
     JvmPluginDescription(
         id = "net.mamoe.tester.samepkg-1",
