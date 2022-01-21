@@ -27,7 +27,7 @@ class TestBuildPlugin : AbstractTest() {
         """.trimIndent()
         )
         gradleRunner()
-            .withArguments("buildPlugin", "--stacktrace")
+            .withArguments("buildPlugin", "dependencies", "--stacktrace", "--info")
             .build()
         val jar = tempDir.resolve("build/libs").listFiles()!!.first { it.name.endsWith(".mirai.jar") }
         ZipFile(jar).use { zipFile ->
@@ -44,6 +44,7 @@ class TestBuildPlugin : AbstractTest() {
             assertTrue { dpPrivate.contains("com.zaxxer:SparseBitSet:1.2") }
             assertTrue { dpPrivate.contains("com.google.code.gson:gson:2.8.9") }
         }
+
     }
 
 }

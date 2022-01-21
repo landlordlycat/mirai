@@ -83,18 +83,20 @@ public interface PluginManager {
     public val pluginsConfigFolder: File
 
     /**
-     * 插件运行时依赖存放路径 [Path]
+     * 插件运行时依赖存放路径 [Path], 插件自动下载的依赖都会存放于此目录
      *
-     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`,
+     * 依赖 jar 文件由插件共享, 但是运行时插件加载的类是互相隔离的
      *
      * @since 2.11
      */
     public val pluginLibrariesPath: Path
 
     /**
-     * 插件运行时依赖存放路径 [File]
+     * 插件运行时依赖存放路径 [File], 插件自动下载的依赖都会存放于此目录
      *
-     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`
+     * **实现细节**: 在 terminal 前端实现为 `$rootPath/plugin-libraries`,
+     * 依赖 jar 文件由插件共享, 但是运行时插件加载的类是互相隔离的
      *
      * @since 2.11
      */

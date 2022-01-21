@@ -113,8 +113,8 @@ public class MiraiConsoleGradlePlugin : Plugin<Project> {
         fun registerBuildPluginTask(target: KotlinTarget, isSingleTarget: Boolean) {
             tasks.create(
                 "buildPlugin".wrapNameWithPlatform(target, isSingleTarget),
-                BuildMiraiPluginNew::class.java
-            ).init()
+                BuildMiraiPluginV2::class.java
+            ).init(target)
             tasks.create(
                 "buildPluginLegacy".wrapNameWithPlatform(target, isSingleTarget),
                 BuildMiraiPluginTask::class.java,
@@ -157,6 +157,10 @@ public class MiraiConsoleGradlePlugin : Plugin<Project> {
         }
     }
 
+    private fun Project.setupConfigurations() {
+        // TODO
+    }
+
     override fun apply(target: Project): Unit = with(target) {
         extensions.create("mirai", MiraiConsoleExtension::class.java)
 
@@ -165,6 +169,8 @@ public class MiraiConsoleGradlePlugin : Plugin<Project> {
         // plugins.apply("org.gradle.maven")
         plugins.apply(ShadowPlugin::class.java)
         plugins.apply(BintrayPlugin::class.java)
+
+        project.setupConfigurations()
 
         afterEvaluate {
             configureCompileTarget()
