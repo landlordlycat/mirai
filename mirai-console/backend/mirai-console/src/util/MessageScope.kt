@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.fold
 import me.him188.kotlin.jvm.blocking.bridge.JvmBlockingBridge
 import net.mamoe.mirai.console.command.CommandSender
+import net.mamoe.mirai.console.command.SystemCommandSender
 import net.mamoe.mirai.contact.Contact
 import net.mamoe.mirai.contact.User
 import net.mamoe.mirai.message.data.Message
@@ -67,15 +68,16 @@ import kotlin.internal.LowPriorityInOverloadResolution
  *
  * 由于 [CommandSender] 与 [Contact] 无公共接口, 无法使用 [listOfNotNull] 遍历处理. [MessageScope] 就是设计为解决这样的问题.
  *
+ * *Kotlin*
  * ```
- * // 在一个 CompositeCommand 内
+ * // 在一个 SimpleCommand 内
  * @Handler
  * suspend fun CommandSender.handle(target: Member) {
  *     val duration = Random.nextInt(1, 15)
  *     target.mute(duration)
  *
  *
- *     // 不使用 MessageScope, 无用的样板代码
+ *     // 不使用 MessageScope
  *     val thisGroup = this.getGroupOrNull()
  *     val message = "${this.name} 禁言 ${target.nameCardOrNick} $duration 秒"
  *     if (target.group != thisGroup) {
@@ -84,7 +86,7 @@ import kotlin.internal.LowPriorityInOverloadResolution
  *     sendMessage(message)
  *
  *
- *     // 使用 MessageScope, 清晰逻辑
+ *     // 使用 MessageScope
  *     // 表示至少发送给 `this`, 当 `this` 的真实发信对象与 `target.group` 不同时, 还额外发送给 `target.group`
  *     this.scopeWith(target.group) {
  *         sendMessage("${name} 禁言了 ${target.nameCardOrNick} $duration 秒")
@@ -96,6 +98,34 @@ import kotlin.internal.LowPriorityInOverloadResolution
  *     //    target,
  *     //    target.group
  *     // ) { ... }
+ * }
+ * ```
+ *
+ * *Java*
+ * ```java
+ * // 在一个 SimpleCommand 内
+ * @Handler
+ * public void handle(sender: CommandSender, target: Member) {
+ *     int duration = Random.nextInt(1, 15);
+ *     target.mute(duration);
+ *
+ *
+ *     // 不使用 MessageScope
+ *     Group thisGroup = this.getGroupOrNull();
+ *     String message = "${this.name} 禁言 ${target.nameCardOrNick} $duration 秒";
+ *     if (!target.group.equals(thisGroup)) {
+ *         target.group.sendMessage(message);
+ *     }
+ *     sender.sendMessage(message);
+ *
+ *
+ *     // 使用 MessageScope
+ *     // 表示至少发送给 `this`, 当 `this` 的真实发信对象与 `target.group` 不同时, 还额外发送给 `target.group`
+ *     MessageScope scope = MessageScopeKt.scopeWith(sender, target);
+ *     scope.sendMessage("${name} 禁言了 ${target.nameCardOrNick} $duration 秒");
+ *
+ *     // 或是只用一行：
+ *     MessageScopeKt.scopeWith(sender, target).sendMessage("${name} 禁言了 ${target.nameCardOrNick} $duration 秒");
  * }
  * ```
  */
@@ -549,6 +579,7 @@ internal fun MessageScope.asSequence(): Sequence<MessageScope> {
     } else sequenceOf(this)
 }
 
+@OptIn(ConsoleExperimentalApi::class)
 private class CombinedScope(
     val first: MessageScope,
     val second: MessageScope,
@@ -572,11 +603,16 @@ private class CombinedScope(
     }
 }
 
+@OptIn(ConsoleExperimentalApi::class)
 private class CommandSenderAsMessageScope(
     private val sender: CommandSender,
 ) : MessageScope {
     override val realTarget: Any
-        get() = sender.user ?: sender // ConsoleCommandSender
+        get() {
+            val sender = this.sender
+            if (sender is SystemCommandSender) return sender
+            return sender.user ?: sender
+        }
 
     override suspend fun sendMessage(message: Message) {
         sender.sendMessage(message)
@@ -587,6 +623,7 @@ private class CommandSenderAsMessageScope(
     }
 }
 
+@OptIn(ConsoleExperimentalApi::class)
 private class ContactAsMessageScope(
     private val sender: Contact,
 ) : MessageScope {
@@ -602,6 +639,7 @@ private class ContactAsMessageScope(
     }
 }
 
+@OptIn(ConsoleExperimentalApi::class)
 private object NoopMessageScope : MessageScope {
     override val realTarget: Any?
         get() = null

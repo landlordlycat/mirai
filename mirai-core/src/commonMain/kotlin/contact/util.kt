@@ -13,67 +13,15 @@ package net.mamoe.mirai.internal.contact
 
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.contact.*
-import net.mamoe.mirai.internal.message.FileMessageImpl
-import net.mamoe.mirai.internal.message.LongMessageInternal
-import net.mamoe.mirai.internal.utils.estimateLength
 import net.mamoe.mirai.message.data.*
-import net.mamoe.mirai.utils.*
+import net.mamoe.mirai.utils.cast
+import net.mamoe.mirai.utils.toUHexString
+import net.mamoe.mirai.utils.verbose
 
 internal inline val Group.uin: Long get() = this.cast<GroupImpl>().uin
 internal inline val Group.groupCode: Long get() = this.id
 internal inline val User.uin: Long get() = this.id
 internal inline val Bot.uin: Long get() = this.id
-
-internal fun Contact.logMessageSent(message: Message) {
-    if (message !is LongMessageInternal) {
-        bot.logger.verbose("$this <- $message".replaceMagicCodes())
-    }
-}
-
-internal fun MessageChain.countImages(): Int = this.count { it is Image }
-
-private val logger by lazy { MiraiLogger.Factory.create(SendMessageHandler::class) }
-
-private val ALLOW_SENDING_FILE_MESSAGE = systemProp("mirai.message.allow.sending.file.message", false)
-
-internal fun Message.verifySendingValid() {
-//    fun fail(msg: String): Nothing = throw IllegalArgumentException(msg)
-    when (this) {
-        is MessageChain -> {
-            this.forEach { it.verifySendingValid() }
-        }
-        is FileMessage -> {
-            if (!ALLOW_SENDING_FILE_MESSAGE) { // #1715
-                if (this !is FileMessageImpl) error("Customized FileMessage cannot be send")
-                if (!this.allowSend) error(
-                    "Sending FileMessage is not allowed, as it may cause unexpected results. " +
-                            "Add JVM argument `-Dmirai.message.allow.sending.file.message=true` to disable this check. " +
-                            "Do this only for compatibility!"
-                )
-            }
-        }
-    }
-}
-
-internal fun MessageChain.verifyLength(
-    originalMessage: Message, target: Contact,
-): Int {
-    val chain = this
-    val length = estimateLength(target, 15001)
-    if (length > 15000 || countImages() > 50) {
-        throw MessageTooLargeException(
-            target, originalMessage, this,
-            "message(${
-                chain.joinToString("", limit = 10).let { rsp ->
-                    if (rsp.length > 100) {
-                        rsp.take(100) + "..."
-                    } else rsp
-                }
-            }) is too large. Allow up to 50 images or 5000 chars"
-        )
-    }
-    return length
-}
 
 @Suppress("RemoveRedundantQualifierName") // compiler bug
 internal fun net.mamoe.mirai.event.events.MessageEvent.logMessageReceived() {
@@ -149,16 +97,86 @@ internal fun net.mamoe.mirai.event.events.MessageEvent.logMessageReceived() {
     }
 }
 
-internal val charMappings = mapOf(
+@Suppress("SpellCheckingInspection")
+private val charMappings = mapOf(
     '\n' to """\n""",
     '\r' to "",
-    '\u202E' to "<RTL>",
+
+    // region Control Characters https://en.wikipedia.org/wiki/Control_character https://en.wikipedia.org/wiki/Unicode_control_characters
+
+    // ASCII
+    '\u0000' to "<NUL>",
+    '\u0001' to "<SOH>",
+    '\u0002' to "<STX>",
+    '\u0003' to "<ETX>",
+    '\u0004' to "<EOT>",
+    '\u0005' to "<ENQ>",
+    '\u0006' to "<ACK>",
+    '\u0007' to "<BEL>",
+    '\u0008' to "<BS>",
+    '\u0009' to "<HT>",
+    // '\u000a' to "<LF>", // \n
+    '\u000b' to "<VT>",
+    '\u000c' to "<FF>",
+    // '\u000d' to "<CR>", // \r
+    '\u000e' to "<SO>",
+    '\u000F' to "<SI>",
+    '\u0010' to "<DLE>",
+    '\u0011' to "<DC1>",
+    '\u0012' to "<DC2>",
+    '\u0013' to "<DC3>",
+    '\u0014' to "<DC4>",
+    '\u0015' to "<NAK>",
+    '\u0016' to "<SYN>",
+    '\u0017' to "<ETB>",
+    '\u0018' to "<CAN>",
+    '\u0019' to "<EM>",
+    '\u001a' to "<SUB>",
+    '\u001b' to "<ESC>",
+    '\u001c' to "<FS>",
+    '\u001d' to "<GS>",
+    '\u001e' to "<RS>",
+    '\u001f' to "<US>",
+
+    '\u007F' to "<DEL>",
+    '\u0085' to "<NEL>",
+
+    // Unicode Control Characters - Bidirectional text control
+    // https://en.wikipedia.org/wiki/Unicode_control_characters#Bidirectional_text_control
+
+    '\u061C' to "<ALM>",
+    '\u200E' to "<LTRM>",
+    '\u200F' to "<RTLM>",
+    '\u202A' to "<LTRE>",
+    '\u202B' to "<RTLE>",
+    '\u202C' to "<PDF>",
     '\u202D' to "<LTR>",
+    '\u202E' to "<RTL>",
+    '\u2066' to "<LTRI>",
+    '\u2067' to "<RTLI>",
+    '\u2068' to "<FSI>",
+    '\u2069' to "<PDI>",
+    // endregion
+
+)
+
+private val regionMappings: Map<IntRange, StringBuilder.(Char) -> Unit> = mapOf(
+    0x0080..0x009F to { // https://en.wikipedia.org/wiki/Control_character#In_Unicode
+        append("<control-").append(it.code.toUHexString()).append(">")
+    },
 )
 
 internal fun String.applyCharMapping() = buildString(capacity = this.length) {
     this@applyCharMapping.forEach { char ->
-        append(charMappings[char] ?: char)
+
+        charMappings[char]?.let { append(char); return@forEach }
+
+        regionMappings.entries.find { char.code in it.key }?.let { mapping ->
+            mapping.value.invoke(this@buildString, char)
+            return@forEach
+        }
+
+        append(char)
     }
 }
 
@@ -168,7 +186,3 @@ internal fun String.replaceMagicCodes(): String = this
 
 internal fun Message.takeContent(length: Int): String =
     this.toMessageChain().joinToString("", limit = length) { it.content }
-
-internal inline fun <reified T : MessageContent> Message.takeSingleContent(): T? {
-    return this as? T ?: this.castOrNull<MessageChain>()?.findIsInstance()
-}

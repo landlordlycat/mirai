@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -20,6 +20,7 @@ import net.mamoe.mirai.contact.AudioSupported
 import net.mamoe.mirai.contact.Contact
 import net.mamoe.mirai.message.MessageSerializers
 import net.mamoe.mirai.message.data.MessageChain.Companion.serializeToJsonString
+import net.mamoe.mirai.message.data.visitor.MessageVisitor
 import net.mamoe.mirai.utils.*
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -57,7 +58,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * @since 2.7
  */
-public sealed interface Audio : MessageContent {
+public sealed interface Audio : MessageContent, ConstrainSingle {
     public companion object Key :
         AbstractPolymorphicMessageKey<MessageContent, Audio>(MessageContent, { it.safeCast() })
 
@@ -101,6 +102,13 @@ public sealed interface Audio : MessageContent {
      */
     public override fun toString(): String
     public override fun contentToString(): String = "[语音消息]"
+
+    @MiraiInternalApi
+    override fun <D, R> accept(visitor: MessageVisitor<D, R>, data: D): R {
+        return visitor.visitAudio(this, data)
+    }
+
+    override val key: MessageKey<*> get() = Key
 }
 
 
@@ -212,7 +220,7 @@ public interface OfflineAudio : Audio {
         }
 
         public companion object INSTANCE :
-            Factory by loadService("net.mamoe.mirai.internal.message.OfflineAudioFactoryImpl")
+            Factory by loadService("net.mamoe.mirai.internal.message.data.OfflineAudioFactoryImpl")
     }
 }
 

@@ -19,22 +19,35 @@ import net.mamoe.mirai.console.command.CommandManager
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
+import kotlin.test.BeforeTest
 
 abstract class AbstractConsoleInstanceTest {
+    init {
+        @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+        net.mamoe.mirai.utils.MiraiLoggerFactoryImplementationBridge.reinit()
+    }
+
     val mockPlugin by lazy { mockKotlinPlugin() }
     private lateinit var implementation: MiraiConsoleImplementation
     val consoleImplementation: MiraiConsoleImplementation by ::implementation
 
-    @BeforeEach
+    @BeforeTest
     protected open fun initializeConsole() {
         this.implementation = MockConsoleImplementation().apply { start() }
         CommandManager
+        consoleImplementation.jvmPluginLoader.load(mockPlugin)
+        consoleImplementation.jvmPluginLoader.enable(mockPlugin)
     }
 
     @AfterEach
     protected open fun stopConsole() {
         if (MiraiConsoleImplementation.instanceInitialized) {
+            try {
+                consoleImplementation.jvmPluginLoader.disable(mockPlugin)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             try {
                 runBlocking { MiraiConsole.job.cancelAndJoin() }
             } catch (e: CancellationException) {

@@ -1,10 +1,10 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
- *  此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
- *  Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
  *
- *  https://github.com/mamoe/mirai/blob/master/LICENSE
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
 @file:Suppress(
@@ -15,13 +15,12 @@
     "INVISIBLE_GETTER",
     "INVISIBLE_ABSTRACT_MEMBER_FROM_SUPER",
 )
-@file:OptIn(ConsoleInternalApi::class, ConsoleTerminalExperimentalApi::class)
+@file:OptIn(ConsoleInternalApi::class, ConsoleTerminalExperimentalApi::class, ConsoleFrontEndImplementation::class)
 
 package net.mamoe.mirai.console.terminal
 
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
 import net.mamoe.mirai.console.MiraiConsole
 import net.mamoe.mirai.console.MiraiConsoleImplementation
 import net.mamoe.mirai.console.MiraiConsoleImplementation.Companion.start
@@ -31,30 +30,47 @@ import net.mamoe.mirai.console.util.ConsoleExperimentalApi
 import net.mamoe.mirai.console.util.ConsoleInternalApi
 import net.mamoe.mirai.message.data.Message
 import net.mamoe.mirai.utils.childScope
+import net.mamoe.mirai.utils.debug
+import net.mamoe.mirai.utils.info
+import net.mamoe.mirai.utils.verbose
+import org.jline.utils.Signals
 import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.io.PrintStream
+import java.lang.Runnable
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.system.exitProcess
 
 /**
  * mirai-console-terminal CLI 入口点
  */
 object MiraiConsoleTerminalLoader {
+
+    // Note: Do not run this in IDEA, as you will get invalid classpath and `java.lang.NoClassDefFoundError`.
+    // Run `RunTerminal.kt` under `test` source set instead.
+    @OptIn(ConsoleExperimentalApi::class)
     @JvmStatic
     fun main(args: Array<String>) {
         parse(args, exitProcess = true)
         startAsDaemon()
         try {
             runBlocking {
-                MiraiConsole.job.invokeOnCompletion {
-                    Thread.sleep(1000) // 保证错误信息打印完全
-                    exitProcess(0)
+                MiraiConsole.job.invokeOnCompletion { err ->
+                    if (err != null) {
+                        Thread.sleep(1000) // 保证错误信息打印完全
+                    }
                 }
                 MiraiConsole.job.join()
             }
         } catch (e: CancellationException) {
             // ignored
         }
+        // Avoid plugin started some non-daemon threads
+        exitProcessAndForceHalt(0)
     }
 
     @ConsoleTerminalExperimentalApi
@@ -112,19 +128,24 @@ object MiraiConsoleTerminalLoader {
                     if (exitProcess) exitProcess(0)
                     return
                 }
+
                 "--no-console" -> {
                     ConsoleTerminalSettings.noConsole = true
                 }
+
                 "--dont-setup-terminal-ansi" -> {
                     ConsoleTerminalSettings.setupAnsi = false
                 }
+
                 "--no-logging" -> {
                     ConsoleTerminalSettings.noLogging = true
                 }
+
                 "--no-ansi" -> {
                     ConsoleTerminalSettings.noAnsi = true
                     ConsoleTerminalSettings.setupAnsi = false
                 }
+
                 "--reading-replacement" -> {
                     ConsoleTerminalSettings.noConsoleSafeReading = true
                     if (iterator.hasNext()) {
@@ -137,9 +158,11 @@ object MiraiConsoleTerminalLoader {
                         return
                     }
                 }
+
                 "--safe-reading" -> {
                     ConsoleTerminalSettings.noConsoleSafeReading = true
                 }
+
                 else -> {
                     println("Unknown option `$option`")
                     printHelpMessage()
@@ -161,6 +184,7 @@ object MiraiConsoleTerminalLoader {
     }
 }
 
+@OptIn(ConsoleExperimentalApi::class)
 internal object ConsoleDataHolder : AutoSavePluginDataHolder,
     CoroutineScope by MiraiConsole.childScope("ConsoleDataHolder") {
     @ConsoleExperimentalApi
@@ -171,36 +195,130 @@ internal object ConsoleDataHolder : AutoSavePluginDataHolder,
         get() = "Terminal"
 }
 
-internal fun overrideSTD(terminal: MiraiConsoleImplementation) {
-    if (ConsoleTerminalSettings.noConsole) {
-        SystemOutputPrintStream // Avoid StackOverflowError when launch with no console mode
+private val shutdownSignals = arrayOf(
+    "INT", "TERM", "QUIT"
+)
+
+internal val signalHandler: (String) -> Unit = initSignalHandler()
+
+@OptIn(ConsoleExperimentalApi::class)
+private fun initSignalHandler(): (String) -> Unit {
+    val shutdownMonitorLock = AtomicBoolean(false)
+    val lastSignalTimestamp = AtomicLong(0)
+    return handler@{ signalName ->
+        if (signalName == "WINCH") {
+            // Windows CMD.exe resized
+            return@handler
+        }
+        runCatching {
+            MiraiConsole.mainLogger
+        }.onFailure { // mirai-console not yet initialized
+            System.err.println("[TERMINAL] [WARNING] Received signal $signalName")
+            System.err.println("[TERMINAL] [WARNING] This signal will be processed later because mirai-console not yet initialized.")
+
+            // Try later
+            if (signalName in shutdownSignals) {
+                @OptIn(DelicateCoroutinesApi::class)
+                GlobalScope.launch {
+                    delay(500L)
+                    signalHandler(signalName)
+                }
+            }
+            return@handler
+        }
+        // JLine may process other signals
+        MiraiConsole.mainLogger.verbose { "Received signal $signalName" }
+        if (signalName !in shutdownSignals) return@handler
+
+        MiraiConsole.mainLogger.debug { "Handled  signal $signalName" }
+        run multiSignalHandler@{
+            val crtTime = System.currentTimeMillis()
+            val last = lastSignalTimestamp.getAndSet(crtTime)
+            if (crtTime - last < 1000L) {
+                MiraiConsole.mainLogger.debug { "Multi    signal $signalName" }
+                MiraiConsole.mainLogger.info { "Process will be killed after 0.5s" }
+
+                @OptIn(DelicateCoroutinesApi::class)
+                GlobalScope.launch {
+                    delay(500L)
+                    exitProcessAndForceHalt(-5)
+                }
+            }
+        }
+        MiraiConsole.shutdown()
+
+        // Shutdown by signal requires process be killed
+        if (shutdownMonitorLock.compareAndSet(false, true)) {
+            val pool = Executors.newFixedThreadPool(4, object : ThreadFactory {
+                private val counter = AtomicInteger()
+                override fun newThread(r: Runnable): Thread {
+                    return Thread(r, "Mirai Console Signal-Shutdown Daemon #" + counter.getAndIncrement()).also {
+                        it.isDaemon = true
+                    }
+                }
+            })
+            @OptIn(DelicateCoroutinesApi::class)
+            GlobalScope.launch(pool.asCoroutineDispatcher()) {
+                MiraiConsole.job.join()
+
+                delay(15000)
+                // Force kill process if plugins started non-daemon threads
+                exitProcessAndForceHalt(-5)
+            }
+            @OptIn(DelicateCoroutinesApi::class)
+            GlobalScope.launch(pool.asCoroutineDispatcher()) {
+                delay(1000L * 60) // timed out
+                // Force kill process if plugins started non-daemon threads
+                exitProcessAndForceHalt(-5)
+            }
+        }
     }
-    lineReader // Initialize real frontend first. #1936
-    System.setOut(
-        PrintStream(
-            BufferedOutputStream(
-                logger = terminal.createLogger("stdout")::info
-            ),
-            false,
-            "UTF-8"
-        )
-    )
-    System.setErr(
-        PrintStream(
-            BufferedOutputStream(
-                logger = terminal.createLogger("stderr")::warning
-            ),
-            false,
-            "UTF-8"
-        )
-    )
+}
+
+internal fun registerSignalHandler() {
+    fun reg(name: String) {
+        Signals.register(name) { signalHandler(name) }
+    }
+    shutdownSignals.forEach { reg(it) }
+}
+
+internal fun exitProcessAndForceHalt(code: Int): Nothing {
+    MiraiConsole.mainLogger.debug { "[exitProcessAndForceHalt] called with code $code" }
+
+    val exitFuncName = arrayOf("exit", "halt")
+    val shutdownClasses = arrayOf("java.lang.System", "java.lang.Runtime", "java.lang.Shutdown")
+    val isShutdowning = Thread.getAllStackTraces().asSequence().flatMap {
+        it.value.asSequence()
+    }.any { stackTrace ->
+        stackTrace.className in shutdownClasses && stackTrace.methodName in exitFuncName
+    }
+    MiraiConsole.mainLogger.debug { "[exitProcessAndForceHalt] isShutdowning = $isShutdowning" }
+
+    val task = Runnable {
+        Thread.sleep(15000L)
+        runCatching { net.mamoe.mirai.console.internal.shutdown.ShutdownDaemon.dumpCrashReport(true) }
+        val fc = when (code) {
+            0 -> 5784171
+            else -> code
+        }
+
+        MiraiConsole.mainLogger.debug { "[exitProcessAndForceHalt] timed out, force halt with code $fc" }
+        Runtime.getRuntime().halt(fc)
+    }
+    if (isShutdowning) {
+        task.run()
+        error("Runtime.halt returned normally, while it was supposed to halt JVM.")
+    } else {
+        Thread(task, "Mirai Console Force Halt Daemon").start()
+        exitProcess(code)
+    }
 }
 
 
 internal object ConsoleCommandSenderImplTerminal : MiraiConsoleImplementation.ConsoleCommandSenderImpl {
     override suspend fun sendMessage(message: String) {
         kotlin.runCatching {
-            lineReader.printAbove(message + ANSI_RESET)
+            printToScreen(message + ANSI_RESET)
         }.onFailure { exception ->
             // If failed. It means JLine Terminal not working...
             PrintStream(FileOutputStream(FileDescriptor.err)).use {

@@ -4,9 +4,13 @@
 
 ## JVM 环境要求
 
-- 桌面 JVM：最低 Java 8，但推荐 Java 11（要使用一键启动器，需要 11）
-- Android：Android SDK 26+ （Android 8.0，Oreo)
+- 桌面 JVM：最低 Java 8，但推荐 Java 17（要使用一键启动器，需要 11 及以上）
+- Android：
+    - mirai 2.15.0 起: API 等级 21 （Android 5.0，LOLLIPOP)
+    - mirai 2.15.0 前: API 等级 26 （Android 8.0，O)
 
+目前主要使用的自动启动器，[Mirai Console Loader](https://github.com/iTXTech/mirai-console-loader)
+，（MCL） 默认安装 JRE 17。
 
 **但注意不要使用 Oracle JDK**
 （[原因](https://github.com/mamoe/mirai/discussions/779)），可以使用其他任何 JDK。
@@ -21,7 +25,7 @@
 
 [Mirai Console IntelliJ]: /mirai-console/tools/intellij-plugin
 
-[Mirai Console IntelliJ-JB]: /mirai-console/tools/intellij-plugin
+[Mirai Console IntelliJ-JB]: https://plugins.jetbrains.com/plugin/15094-mirai-console
 
 [Mirai Console IntelliJ-OK]: https://plugins.jetbrains.com/embeddable/install/15094
 
@@ -33,8 +37,8 @@
 或 [Android Studio](https://developer.android.com/studio)。Mirai 提供 IDE
 插件来提升开发体验。
 
-|          插件名           |                         描述                         |               一键安装                |         JetBrains 插件仓库          |
-|:------------------------:|:---------------------------------------------------:|:-----------------------------------:|:----------------------------------:|
+|           插件名            |                     描述                     |               一键安装                |          JetBrains 插件仓库          |
+|:------------------------:|:------------------------------------------:|:---------------------------------:|:--------------------------------:|
 | [Mirai Console IntelliJ] | 提供 mirai-core 的错误检查和 mirai-console 的插件开发辅助 | [一键安装][Mirai Console IntelliJ-OK] | [说明页][Mirai Console IntelliJ-JB] |
 
 <!--| [Kotlin Jvm Blocking Bridge] |         帮助 Java 用户调用 Kotlin suspend 函数         | [Kotlin Jvm Blocking Bridge-OK] | [Kotlin Jvm Blocking Bridge-JB] |-->
@@ -43,7 +47,7 @@
 
 ### Kotlin
 
-Kotlin 是[让开发人员更快乐的一门现代编程语言](https://www.kotlincn.net/)，由 [IntelliJ IDEA](https://www.jetbrains.com/idea/) 的开发公司 [JetBrains](https://www.jetbrains.com/) 维护，被 Google 推举为 Android 首选编程语言。
+[Kotlin](https://kotl.in) 是让开发人员更快乐的一门现代编程语言，由 [IntelliJ IDEA](https://www.jetbrains.com/idea/) 的开发公司 [JetBrains](https://www.jetbrains.com/) 维护，被 Google 推举为 Android 首选编程语言。
 
 使用 Mirai 是一个不错的学习 Kotlin 机会，使用者有兴趣可以在 [官方中文文档](https://www.kotlincn.net/docs/reference/) 学习 Kotlin。
 

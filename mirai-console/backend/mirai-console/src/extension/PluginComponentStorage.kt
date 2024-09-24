@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2022 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -10,14 +10,10 @@
 package net.mamoe.mirai.console.extension
 
 import net.mamoe.mirai.console.command.descriptor.ExperimentalCommandDescriptors
-import net.mamoe.mirai.console.command.parse.CommandCallParser
-import net.mamoe.mirai.console.command.resolve.CommandCallInterceptor
-import net.mamoe.mirai.console.command.resolve.CommandCallResolver
 import net.mamoe.mirai.console.extensions.*
 import net.mamoe.mirai.console.internal.extension.AbstractConcurrentComponentStorage
-import net.mamoe.mirai.console.permission.PermissionService
 import net.mamoe.mirai.console.plugin.Plugin
-import net.mamoe.mirai.console.plugin.loader.PluginLoader
+import net.mamoe.mirai.utils.DeprecatedSinceMirai
 import kotlin.reflect.full.companionObjectInstance
 
 /**
@@ -56,11 +52,16 @@ public class PluginComponentStorage(
     // FunctionExtension
     ///////////////////////////////////////////////////////////////////////////
 
-    /** 注册一个 [SingletonExtensionSelector] */
-    public fun contributeSingletonExtensionSelector(lazyInstance: () -> SingletonExtensionSelector): Unit =
-        contribute(SingletonExtensionSelector, plugin, lazyInstance)
+    /** 注册一个 [net.mamoe.mirai.console.extensions.SingletonExtensionSelector] */
+    @Suppress("DeprecatedCallableAddReplaceWith", "DEPRECATION_ERROR", "DEPRECATION")
+    @Deprecated(
+        "Order of extensions is now determined by its priority property since 2.11. SingletonExtensionSelector is not needed anymore. ",
+        level = DeprecationLevel.HIDDEN
+    )
+    @DeprecatedSinceMirai(warningSince = "2.11", errorSince = "2.13", hiddenSince = "2.14")
+    public fun contributeSingletonExtensionSelector(lazyInstance: () -> net.mamoe.mirai.console.extensions.SingletonExtensionSelector): Unit =
+        contribute(net.mamoe.mirai.console.extensions.SingletonExtensionSelector.ExtensionPoint, plugin, lazyInstance)
 
-    @Suppress("SpellCheckingInspection") // alterer
     /** 注册一个 [BotConfigurationAlterer] */
     public fun contributeBotConfigurationAlterer(instance: BotConfigurationAlterer): Unit =
         contribute(BotConfigurationAlterer, plugin, lazyInstance = { instance })
@@ -77,22 +78,12 @@ public class PluginComponentStorage(
     ///////////////////////////////////////////////////////////////////////////
 
     /** 注册一个 [PermissionServiceProvider] */
-    @OverloadResolutionByLambdaReturnType
-    public fun contributePermissionService(lazyInstance: () -> PermissionService<*>): Unit =
-        contribute(PermissionServiceProvider, plugin, PermissionServiceProviderImplLazy(lazyInstance))
-
-    /** 注册一个 [PermissionServiceProvider] */
     @JvmName("contributePermissionServiceProvider")
     @OverloadResolutionByLambdaReturnType
     public fun contributePermissionService(lazyProvider: () -> PermissionServiceProvider): Unit =
         contribute(PermissionServiceProvider, plugin, lazyProvider)
 
     /////////////////////////////////////
-
-    /** 注册一个 [PluginLoaderProvider] */
-    @OverloadResolutionByLambdaReturnType
-    public fun contributePluginLoader(lazyInstance: () -> PluginLoader<*, *>): Unit =
-        contribute(PluginLoaderProvider, plugin, PluginLoaderProviderImplLazy(lazyInstance))
 
     /** 注册一个 [PluginLoaderProvider] */
     @JvmName("contributePluginLoaderProvider")
@@ -102,11 +93,6 @@ public class PluginComponentStorage(
 
     /////////////////////////////////////
 
-    /** 注册一个 [CommandCallParserProvider] */
-    @ExperimentalCommandDescriptors
-    @OverloadResolutionByLambdaReturnType
-    public fun contributeCommandCallParser(lazyInstance: () -> CommandCallParser): Unit =
-        contribute(CommandCallParserProvider, plugin, CommandCallParserProviderImplLazy(lazyInstance))
 
     /** 注册一个 [CommandCallParserProvider] */
     @ExperimentalCommandDescriptors
@@ -117,11 +103,6 @@ public class PluginComponentStorage(
 
     /////////////////////////////////////
 
-    /** 注册一个 [CommandCallResolverProvider] */
-    @ExperimentalCommandDescriptors
-    @OverloadResolutionByLambdaReturnType
-    public fun contributeCommandCallResolver(lazyInstance: () -> CommandCallResolver): Unit =
-        contribute(CommandCallResolverProvider, plugin, CommandCallResolverProviderImplLazy(lazyInstance))
 
     /** 注册一个 [CommandCallResolverProvider] */
     @ExperimentalCommandDescriptors
@@ -131,12 +112,6 @@ public class PluginComponentStorage(
         contribute(CommandCallResolverProvider, plugin, provider)
 
     /////////////////////////////////////
-
-    /** 注册一个 [CommandCallInterceptorProvider] */
-    @ExperimentalCommandDescriptors
-    @OverloadResolutionByLambdaReturnType
-    public fun contributeCommandCallInterceptor(lazyInstance: () -> CommandCallInterceptor): Unit =
-        contribute(CommandCallInterceptorProvider, plugin, CommandCallInterceptorProviderImplLazy(lazyInstance))
 
     /** 注册一个 [CommandCallInterceptorProvider] */
     @ExperimentalCommandDescriptors

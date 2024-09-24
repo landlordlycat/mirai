@@ -15,8 +15,12 @@ plugins {
 description = "Binary compatibility validator for project $$PROJECT_PATH$$"
 
 tasks.withType(kotlinx.validation.KotlinApiBuildTask::class) {
+    val paths = """
+        $$BUILD_DIR$$
+        """
+        .lines().filter { it.isNotBlank() }.map { project("$$PROJECT_PATH$$").buildDir.resolve(it.trim()) }
     inputClassesDirs =
-        files(inputClassesDirs.files, project("$$PROJECT_PATH$$").buildDir.resolve("$$BUILD_DIR$$"))
+        files(inputClassesDirs.files, *paths.toTypedArray())
 }
 
 apiValidation {
@@ -28,4 +32,5 @@ apiValidation {
     nonPublicMarkers.add("net.mamoe.mirai.console.ConsoleFrontEndImplementation") // added on 2.11
     nonPublicMarkers.add("net.mamoe.mirai.console.util.ConsoleExperimentalApi")
     nonPublicMarkers.add("net.mamoe.mirai.utils.MiraiExperimentalApi")
+    nonPublicMarkers.add("net.mamoe.mirai.console.command.descriptor.ExperimentalCommandDescriptors") // added on 2.14
 }

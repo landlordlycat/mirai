@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -11,10 +11,12 @@
 
 package net.mamoe.mirai.internal.utils.io.serialization.tars
 
-import kotlinx.io.charsets.Charset
-import kotlinx.io.charsets.Charsets
-import kotlinx.io.core.*
-import kotlinx.serialization.*
+import io.ktor.utils.io.charsets.*
+import io.ktor.utils.io.core.*
+import kotlinx.serialization.BinaryFormat
+import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.SerialFormat
+import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
 import net.mamoe.mirai.internal.utils.io.serialization.tars.internal.DebugLogger
@@ -22,13 +24,13 @@ import net.mamoe.mirai.internal.utils.io.serialization.tars.internal.TarsDecoder
 import net.mamoe.mirai.internal.utils.io.serialization.tars.internal.TarsInput
 import net.mamoe.mirai.internal.utils.io.serialization.tars.internal.TarsOld
 import net.mamoe.mirai.utils.read
+import kotlin.jvm.JvmStatic
 
 /**
  * The main entry point to work with Tars serialization.
  */
-@OptIn(ExperimentalSerializationApi::class)
 internal class Tars(
-    override val serializersModule: SerializersModule = EmptySerializersModule,
+    override val serializersModule: SerializersModule = EmptySerializersModule(),
     val charset: Charset = Charsets.UTF_8,
 ) : SerialFormat, BinaryFormat {
     private val old = TarsOld(charset)

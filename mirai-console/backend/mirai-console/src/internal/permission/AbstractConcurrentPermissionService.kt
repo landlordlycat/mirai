@@ -12,7 +12,8 @@ package net.mamoe.mirai.console.internal.permission
 import net.mamoe.mirai.console.data.PluginDataExtensions
 import net.mamoe.mirai.console.permission.*
 import net.mamoe.mirai.console.permission.Permission.Companion.parentsWithSelf
-import net.mamoe.mirai.console.permission.PermitteeId.Companion.hasChild
+import net.mamoe.mirai.console.permission.PermitteeId.Companion.allParentsWithSelf
+import net.mamoe.mirai.console.permission.PermitteeId.Companion.isChildOf
 
 internal abstract class AbstractConcurrentPermissionService<P : Permission> : PermissionService<P> {
     protected abstract val permissions: MutableMap<PermissionId, P>
@@ -41,27 +42,31 @@ internal abstract class AbstractConcurrentPermissionService<P : Permission> : Pe
         } else {
             grantedPermissionsMap[permission.id].remove(permitteeId)
         }
-        check(success) {
+        if (!success) {
             val about = buildList {
                 for ((permissionIdentifier, permissibleIdentifiers) in grantedPermissionsMap) {
                     val parent = get(permissionIdentifier) ?: continue
                     if (parent !in permission.parentsWithSelf) continue
                     for (permissibleId in permissibleIdentifiers) {
-                        if (permitteeId.hasChild(permitteeId)) {
+                        if (permissibleId in permitteeId.allParentsWithSelf) {
                             add(parent to permissibleId)
                         }
                     }
                 }
             }
-            if (about.isEmpty()) {
-                "${permitteeId.asString()} 不拥有权限 ${permission.id} "
+            val message = if (about.isEmpty()) {
+                "${permitteeId.asString()} 不拥有权限 ${permission.id}"
             } else {
-                """
-                    ${permitteeId.asString()} 的 ${permission.id} 权限来自
-                    ${about.joinToString("\n") { (parent, permitted) -> "${permitted.asString()} ${parent.id}" }}
-                    Mirai Console 内置权限系统目前不支持单独禁用继承得到的权限. 可取消继承来源再为其分别分配.
-                """.trimIndent()
+                buildString {
+                    appendLine("${permitteeId.asString()} 的 ${permission.id} 权限来自")
+                    about.forEach { (parent, permitted) ->
+                        appendLine("${permitted.asString()} ${parent.id}")
+                    }
+                    appendLine("Mirai Console 内置权限系统目前不支持单独禁用继承得到的权限. 可取消继承来源再为其分别分配.")
+                }
             }
+
+            throw UnsupportedOperationException(message)
         }
     }
 
@@ -70,9 +75,26 @@ internal abstract class AbstractConcurrentPermissionService<P : Permission> : Pe
     override fun getPermittedPermissions(permitteeId: PermitteeId): Sequence<P> = sequence {
         for ((permissionIdentifier, permissibleIdentifiers) in grantedPermissionsMap) {
 
-            val granted = permissibleIdentifiers.any { permitteeId.hasChild(it) }
+            val granted = permissibleIdentifiers.any { permitteeId.isChildOf(it) }
 
             if (granted) get(permissionIdentifier)?.let { yield(it) }
         }
+    }
+
+    internal fun getPermittedPermissionsAndSource(permitteeId: PermitteeId): Sequence<Pair<PermitteeId, P>> = sequence {
+        for ((permissionIdentifier, permissibleIdentifiers) in grantedPermissionsMap) {
+            permissibleIdentifiers.forEach { pid ->
+                if (permitteeId.isChildOf(pid)) {
+                    get(permissionIdentifier)?.let { yield(pid to it) }
+                }
+            }
+        }
+    }
+}
+
+internal fun PermitteeId.getPermittedPermissionsAndSource(): Sequence<Pair<PermitteeId, Permission>> {
+    return when (val ps = PermissionService.INSTANCE) {
+        is AbstractConcurrentPermissionService -> ps.getPermittedPermissionsAndSource(this)
+        else -> ps.getPermittedPermissions(this).map { this to it }
     }
 }

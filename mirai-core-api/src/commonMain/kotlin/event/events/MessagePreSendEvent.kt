@@ -20,6 +20,8 @@ import net.mamoe.mirai.internal.event.VerboseEvent
 import net.mamoe.mirai.message.data.Message
 import net.mamoe.mirai.utils.DeprecatedSinceMirai
 import net.mamoe.mirai.utils.MiraiInternalApi
+import kotlin.jvm.JvmMultifileClass
+import kotlin.jvm.JvmName
 
 
 /**
@@ -34,6 +36,7 @@ import net.mamoe.mirai.utils.MiraiInternalApi
  *
  * @see Contact.sendMessage 发送消息. 为广播这个事件的唯一途径
  */
+@OptIn(MiraiInternalApi::class)
 public sealed class MessagePreSendEvent : BotEvent, BotActiveEvent, AbstractEvent(), CancellableEvent, VerboseEvent {
     /** 发信目标. */
     public abstract val target: Contact
@@ -100,12 +103,13 @@ public sealed class TempMessagePreSendEvent @MiraiInternalApi constructor(
  * 在发送群临时会话消息前广播的事件.
  * @see MessagePreSendEvent
  */
+@OptIn(MiraiInternalApi::class)
 public data class GroupTempMessagePreSendEvent @MiraiInternalApi constructor(
     /** 发信目标. */
     public override val target: NormalMember,
     /** 待发送的消息. 修改后将会同时应用于发送. */
     public override var message: Message
-) : @kotlin.Suppress("DEPRECATION_ERROR") TempMessagePreSendEvent(target, message) {
+) : @Suppress("DEPRECATION_ERROR") TempMessagePreSendEvent(target, message) {
     public override val group: Group get() = target.group
 }
 

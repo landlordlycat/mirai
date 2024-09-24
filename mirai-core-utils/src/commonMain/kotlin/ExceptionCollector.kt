@@ -7,10 +7,15 @@
  * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
+@file:JvmName("ExceptionCollectorKt_common")
+
 package net.mamoe.mirai.utils
 
 import kotlin.contracts.InvocationKind
 import kotlin.contracts.contract
+import kotlin.jvm.JvmName
+import kotlin.jvm.Synchronized
+import kotlin.jvm.Volatile
 
 public open class ExceptionCollector {
 
@@ -31,6 +36,7 @@ public open class ExceptionCollector {
     @Volatile
     private var last: Throwable? = null
     private val hashCodes = mutableSetOf<Long>()
+    private val suppressedList = mutableListOf<Throwable>()
 
     /**
      * @return `true` if [e] is new.
@@ -47,17 +53,8 @@ public open class ExceptionCollector {
     }
 
     protected open fun addSuppressed(receiver: Throwable, e: Throwable) {
-        receiver.addSuppressed(e)
-    }
-
-    private fun hash(e: Throwable): Long {
-        return e.stackTrace.fold(0L) { acc, stackTraceElement ->
-            acc * 31 + hash(stackTraceElement).toLongUnsigned()
-        }
-    }
-
-    private fun hash(element: StackTraceElement): Int {
-        return element.lineNumber.hashCode() xor element.className.hashCode() xor element.methodName.hashCode()
+        suppressedList.add(e)
+//        receiver.addSuppressed(e)
     }
 
     public fun collectGet(e: Throwable?): Throwable {
@@ -71,7 +68,23 @@ public open class ExceptionCollector {
      */
     public fun collectException(e: Throwable?): Boolean = collect(e)
 
-    public fun getLast(): Throwable? = last
+    /**
+     * Adds [suppressedList] to suppressed exceptions of [last]
+     */
+    @Synchronized
+    private fun bake() {
+        last?.let { last ->
+            for (suppressed in suppressedList.asReversed()) {
+                last.addSuppressed(suppressed)
+            }
+        }
+        suppressedList.clear()
+    }
+
+    public fun getLast(): Throwable? {
+        bake()
+        return last
+    }
 
     @TerminalOperation // to give it a color for a clearer control flow
     public fun collectThrow(exception: Throwable): Nothing {
@@ -90,7 +103,8 @@ public open class ExceptionCollector {
     @TestOnly // very slow
     public fun asSequence(): Sequence<Throwable> {
         fun Throwable.itr(): Iterator<Throwable> {
-            return (sequenceOf(this) + this.suppressed.asSequence().flatMap { it.itr().asSequence() }).iterator()
+            return (sequenceOf(this) + this.suppressedExceptions.asSequence()
+                .flatMap { it.itr().asSequence() }).iterator()
         }
 
         val last = getLast() ?: return emptySequence()
@@ -101,6 +115,7 @@ public open class ExceptionCollector {
     public fun dispose() { // help gc
         this.last = null
         this.hashCodes.clear()
+        this.suppressedList.clear()
     }
 
     public companion object {
@@ -134,6 +149,10 @@ public inline fun <R> ExceptionCollector.withExceptionCollector(action: Exceptio
             return action()
         } catch (e: Throwable) {
             collectThrow(e)
+        } finally {
+            dispose()
         }
     }
 }
+
+internal expect fun hash(e: Throwable): Long

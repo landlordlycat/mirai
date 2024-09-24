@@ -9,26 +9,23 @@
 
 package net.mamoe.mirai.internal.utils.io.serialization.tars.internal
 
+import io.ktor.utils.io.core.*
 import kotlinx.serialization.Serializable
 import net.mamoe.mirai.internal.test.AbstractTest
 import net.mamoe.mirai.internal.utils.io.JceStruct
-import net.mamoe.mirai.internal.utils.io.serialization.JCE_DESERIALIZER_DEBUG
 import net.mamoe.mirai.internal.utils.io.serialization.readJceStruct
 import net.mamoe.mirai.internal.utils.io.serialization.tars.Tars
 import net.mamoe.mirai.internal.utils.io.serialization.tars.TarsId
 import net.mamoe.mirai.internal.utils.io.serialization.toByteArray
 import net.mamoe.mirai.utils.toReadPacket
 import net.mamoe.mirai.utils.toUHexString
-import org.junit.jupiter.api.Test
-import java.io.ByteArrayOutputStream
-import java.io.PrintStream
+import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 
-class DebugLoggerTest : AbstractTest() {
-    init {
-        JCE_DESERIALIZER_DEBUG = true
-    }
+internal class DebugLoggerTest : AbstractTest() {
+
+    fun String.uniteLine(): String = replace("\r\n", "\n").replace("\r", "\n")
 
     @Serializable
     data class Struct(
@@ -38,8 +35,8 @@ class DebugLoggerTest : AbstractTest() {
 
     @Test
     fun `can log`() {
-        val out = ByteArrayOutputStream()
-        val logger = DebugLogger(PrintStream(out))
+        val out = BytePacketBuilder()
+        val logger = DebugLogger(out)
         val original = Struct("string", 1)
         val bytes = original.toByteArray(Struct.serializer())
         val value = bytes.toReadPacket().use { Tars.UTF_8.load(Struct.serializer(), it, logger) }
@@ -53,7 +50,7 @@ class DebugLoggerTest : AbstractTest() {
                 name=int
                 decodeElementIndex: currentHead == null
             endStructure: net.mamoe.mirai.internal.utils.io.serialization.tars.internal.DebugLoggerTest.Struct, null, null
-        """.trimIndent(), out.toByteArray().decodeToString().trim()
+        """.trimIndent(), out.build().readBytes().decodeToString().trim().uniteLine()
         )
     }
 
@@ -75,7 +72,10 @@ class DebugLoggerTest : AbstractTest() {
                 decodeElementIndex: TarsHead(tag=1, type=6(String1))
                 name=str
                 decodeElementIndex: TarsHead(tag=3, type=0(Byte))
-        """.trimIndent(), exception.message!!.trim()
+                skipping Byte
+                decodeElementIndex EOF
+            endStructure: net.mamoe.mirai.internal.utils.io.serialization.tars.internal.DebugLoggerTest.Struct, null, null
+        """.trimIndent().trim(), exception.message!!.trim().uniteLine()
         )
     }
 }

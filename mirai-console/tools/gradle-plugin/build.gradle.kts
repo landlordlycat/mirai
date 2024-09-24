@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -39,18 +39,20 @@ dependencies {
 
     api("com.github.jengelman.gradle.plugins:shadow:6.0.0")
     api(`jetbrains-annotations`)
-    api("com.jfrog.bintray.gradle:gradle-bintray-plugin:1.8.5")
 
+    // override vulnerable Log4J version
+    // https://blog.gradle.org/log4j-vulnerability
+    implementation(`log4j-api`)
+    implementation(`log4j-core`)
 
     testApi(kotlin("test-junit5"))
-    testApi("org.junit.jupiter:junit-jupiter-api:${Versions.junit}")
-    testApi("org.junit.jupiter:junit-jupiter-params:${Versions.junit}")
+    testApi(`junit-jupiter-api`)
+    testApi(`junit-jupiter-params`)
 
     "integTestApi"(kotlin("test-junit5"))
-    "integTestApi"("org.junit.jupiter:junit-jupiter-api:${Versions.junit}")
-    "integTestApi"("org.junit.jupiter:junit-jupiter-params:${Versions.junit}")
-    "integTestImplementation"("org.junit.jupiter:junit-jupiter-engine:${Versions.junit}")
-//    "integTestImplementation"("org.spockframework:spock-core:1.3-groovy-2.5")
+    "integTestApi"(`junit-jupiter-api`)
+    "integTestApi"(`junit-jupiter-params`)
+    "integTestImplementation"(`junit-jupiter-engine`)
     "integTestImplementation"(gradleTestKit())
 
     kotlinVersionForIntegrationTest(kotlin("gradle-plugin", "1.5.21"))
@@ -67,20 +69,18 @@ kotlin {
     explicitApi()
 }
 
-pluginBundle {
-    website = "https://github.com/mamoe/mirai"
-    vcsUrl = "https://github.com/mamoe/mirai"
-    tags = listOf("framework", "kotlin", "mirai")
-}
-
+@Suppress("UnstableApiUsage")
 gradlePlugin {
     testSourceSets(integTest)
+    website.set("https://github.com/mamoe/mirai")
+    vcsUrl.set("https://github.com/mamoe/mirai")
     plugins {
         create("miraiConsole") {
             id = "net.mamoe.mirai-console"
             displayName = "Mirai Console"
             description = project.description
             implementationClass = "net.mamoe.mirai.console.gradle.MiraiConsoleGradlePlugin"
+            tags.set(listOf("framework", "kotlin", "mirai"))
         }
     }
 }
@@ -116,5 +116,5 @@ tasks {
 }
 
 if (System.getenv("MIRAI_IS_SNAPSHOTS_PUBLISHING")?.toBoolean() == true) {
-    configurePublishing("mirai-console-gradle")
+    configurePublishing("mirai-console-gradle", skipPublicationSetup = true)
 }

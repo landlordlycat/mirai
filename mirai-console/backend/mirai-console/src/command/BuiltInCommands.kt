@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -7,15 +7,17 @@
  * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
+@file:OptIn(ConsoleFrontEndImplementation::class)
+
 package net.mamoe.mirai.console.command
 
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.mamoe.mirai.Bot
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
 import net.mamoe.mirai.console.MiraiConsole
 import net.mamoe.mirai.console.MiraiConsoleImplementation
 import net.mamoe.mirai.console.MiraiConsoleImplementation.ConsoleDataScope.Companion.get
@@ -35,31 +37,30 @@ import net.mamoe.mirai.console.internal.data.builtins.AutoLoginConfig.Account.Pa
 import net.mamoe.mirai.console.internal.data.builtins.DataScope
 import net.mamoe.mirai.console.internal.extension.GlobalComponentStorage
 import net.mamoe.mirai.console.internal.permission.BuiltInPermissionService
+import net.mamoe.mirai.console.internal.permission.getPermittedPermissionsAndSource
+import net.mamoe.mirai.console.internal.plugin.JvmPluginInternal
+import net.mamoe.mirai.console.internal.plugin.MiraiConsoleAsPlugin
 import net.mamoe.mirai.console.internal.pluginManagerImpl
 import net.mamoe.mirai.console.internal.util.runIgnoreException
 import net.mamoe.mirai.console.permission.Permission
-import net.mamoe.mirai.console.permission.Permission.Companion.parentsWithSelf
+import net.mamoe.mirai.console.permission.PermissionId
 import net.mamoe.mirai.console.permission.PermissionService
 import net.mamoe.mirai.console.permission.PermissionService.Companion.cancel
 import net.mamoe.mirai.console.permission.PermissionService.Companion.findCorrespondingPermissionOrFail
-import net.mamoe.mirai.console.permission.PermissionService.Companion.getPermittedPermissions
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
 import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
 import net.mamoe.mirai.console.permission.PermitteeId
 import net.mamoe.mirai.console.plugin.name
 import net.mamoe.mirai.console.plugin.version
-import net.mamoe.mirai.console.util.AnsiMessageBuilder
-import net.mamoe.mirai.console.util.ConsoleExperimentalApi
-import net.mamoe.mirai.console.util.ConsoleInternalApi
-import net.mamoe.mirai.console.util.sendAnsiMessage
+import net.mamoe.mirai.console.util.*
 import net.mamoe.mirai.event.events.EventCancelledException
 import net.mamoe.mirai.utils.BotConfiguration
-import net.mamoe.mirai.utils.MiraiLogger
+import net.mamoe.mirai.utils.MiraiExperimentalApi
 import java.lang.management.ManagementFactory
+import java.lang.management.MemoryMXBean
 import java.lang.management.MemoryUsage
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.floor
 import kotlin.system.exitProcess
 
 
@@ -68,6 +69,7 @@ import kotlin.system.exitProcess
 public interface BuiltInCommand : Command
 
 // for identification
+@OptIn(ConsoleExperimentalApi::class)
 internal interface BuiltInCommandInternal : Command, BuiltInCommand
 
 /**
@@ -130,7 +132,10 @@ public object BuiltInCommands {
 
         private val closingLock = Mutex()
 
-        @OptIn(DelicateCoroutinesApi::class)
+        @OptIn(
+            DelicateCoroutinesApi::class, ConsoleFrontEndImplementation::class, ConsoleExperimentalApi::class,
+            ConsoleInternalApi::class
+        )
         @Handler
         public suspend fun CommandSender.handle() {
             GlobalScope.launch {
@@ -139,16 +144,7 @@ public object BuiltInCommands {
                         if (!MiraiConsole.isActive) return@withLock
                         sendMessage("Stopping mirai-console")
                         kotlin.runCatching {
-                            Bot.instances.forEach { bot ->
-                                lateinit var logger: MiraiLogger
-                                kotlin.runCatching {
-                                    logger = bot.logger
-                                    bot.closeAndJoin()
-                                }.onFailure { t ->
-                                    kotlin.runCatching { logger.error("Error in closing bot", t) }
-                                }
-                            }
-                            MiraiConsole.job.cancelAndJoin()
+                            MiraiConsoleImplementation.shutdown()
                         }.fold(
                             onSuccess = {
                                 runIgnoreException<EventCancelledException> { sendMessage("mirai-console stopped successfully.") }
@@ -175,6 +171,7 @@ public object BuiltInCommands {
         description = "登出一个账号",
     ), BuiltInCommandInternal {
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Handler
         public suspend fun CommandSender.handle(
             @Name("qq") id: Long
@@ -194,6 +191,7 @@ public object BuiltInCommands {
         description = loginCommandInstance.description,
     ), BuiltInCommandInternal {
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Handler
         @JvmOverloads
         public suspend fun CommandSender.handle(
@@ -221,6 +219,36 @@ public object BuiltInCommands {
     ), BuiltInCommandInternal {
         // TODO: 2020/9/10 improve Permission command
 
+        /* 用于解析权限继承关系 */
+        private class PermTree(
+            val perm: Permission,
+            val sub: MutableList<PermissionId> = mutableListOf(),
+            var linked: Boolean = false,
+            var implicit: Boolean = false,
+            val source: MutableList<PermitteeId> = mutableListOf(),
+        ) {
+            companion object {
+                fun sortView(view: PermTree) {
+                    view.sub.sortWith { p1, p2 ->
+                        val namespaceCompare = p1.namespace compareTo p2.namespace
+                        if (namespaceCompare != 0) return@sortWith namespaceCompare
+
+                        if (p1.name == p2.name) return@sortWith 0 // ?
+                        if (p1.name == "*") return@sortWith -1
+                        if (p2.name == "*") return@sortWith 1
+
+                        return@sortWith p1.name compareTo p2.name
+                    }
+                }
+            }
+        }
+
+        private fun renderDepth(depth: Int, sb: AnsiMessageBuilder) {
+            repeat(depth) { sb.append(" | ") }
+        }
+
+
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("授权一个权限")
         @SubCommand("permit", "grant", "add")
         public suspend fun CommandSender.permit(
@@ -231,6 +259,7 @@ public object BuiltInCommands {
             sendMessage("OK")
         }
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("撤销一个权限")
         @SubCommand("cancel", "deny", "remove")
         public suspend fun CommandSender.cancel(
@@ -241,6 +270,7 @@ public object BuiltInCommands {
             sendMessage("OK")
         }
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("撤销一个权限及其所有子权限")
         @SubCommand("cancelAll", "denyAll", "removeAll")
         public suspend fun CommandSender.cancelAll(
@@ -251,31 +281,155 @@ public object BuiltInCommands {
             sendMessage("OK")
         }
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("查看被授权权限列表")
         @SubCommand("permittedPermissions", "pp", "grantedPermissions", "gp")
         public suspend fun CommandSender.permittedPermissions(
             @Name("被许可人 ID") target: PermitteeId,
-            @Name("包括重复") all: Boolean = false,
+            @Name("显示全部") all: Boolean = true,
         ) {
-            var grantedPermissions = target.getPermittedPermissions().toList()
-            if (!all) {
-                grantedPermissions = grantedPermissions.filter { thisPerm ->
-                    grantedPermissions.none { other -> thisPerm.parentsWithSelf.drop(1).any { it == other } }
-                }
-            }
+            val grantedPermissions = target.getPermittedPermissionsAndSource().toList()
             if (grantedPermissions.isEmpty()) {
                 sendMessage("${target.asString()} 未被授予任何权限. 使用 `${CommandManager.commandPrefix}permission grant` 给予权限.")
+            } else if (all) {
+                val allPermissions = PermissionService.INSTANCE.getRegisteredPermissions().toList()
+                val permMapping = mutableMapOf<PermissionId, PermTree>()
+                grantedPermissions.forEach { (source, granted) ->
+                    val m = permMapping[granted.id] ?: kotlin.run {
+                        PermTree(granted).also { it.implicit = false; permMapping[granted.id] = it }
+                    }
+                    m.source.add(source)
+                }
+                val root = PermissionService.INSTANCE.rootPermission
+                fun linkPmTree(permTree: PermTree) {
+                    allPermissions.forEach { perm ->
+                        if (perm.id == root.id) return@forEach
+                        if (perm.parent.id == permTree.perm.id) {
+                            permTree.sub.add(perm.id)
+                            val subp = permMapping[perm.id] ?: kotlin.run {
+                                val p = PermTree(perm)
+                                p.implicit = true
+                                permMapping[perm.id] = p
+                                linkPmTree(p)
+                                p
+                            }
+                            subp.linked = true
+                        }
+                    }
+                }
+                permMapping.values.toList().forEach { linkPmTree(it) }
+                permMapping.values.forEach { PermTree.sortView(it) }
+
+                @Suppress("LocalVariableName")
+                val BG_BLACK = "\u001B[40m"
+                fun render(depth: Int, view: PermTree, sb: AnsiMessageBuilder) {
+                    if (view.implicit) {
+                        sb.gray()
+                        sb.append(view.perm.id)
+                        sb.append(" (implicit)\n")
+                        sb.reset().white().ansi(BG_BLACK)
+                    } else {
+                        sb.append(view.perm.id)
+                        if (view.source.isNotEmpty()) {
+                            sb.append(' ').gray().append('(')
+                            sb.append("from ")
+                            view.source.joinTo(sb)
+                            sb.append(')').reset().white().ansi(BG_BLACK)
+                        }
+                        sb.append('\n')
+                    }
+                    view.sub.forEach { sub ->
+                        val subView = permMapping[sub] ?: error("Error in resolving $sub")
+                        renderDepth(depth, sb)
+                        sb.append(" |- ")
+                        render(depth + 1, subView, sb)
+                    }
+                }
+                sendAnsiMessage {
+                    ansi(BG_BLACK).white()
+                    permMapping.forEach { (_, tree) ->
+                        if (!tree.linked) {
+                            render(0, tree, this)
+                        }
+                    }
+                }
             } else {
-                sendMessage(grantedPermissions.joinToString("\n") { it.id.toString() })
+                sendMessage(grantedPermissions.map { it.second.id }.toSet().joinToString("\n"))
             }
         }
 
         @Description("查看所有权限列表")
         @SubCommand("listPermissions", "lp")
         public suspend fun CommandSender.listPermissions() {
-            sendMessage(
-                PermissionService.INSTANCE.getRegisteredPermissions()
-                    .joinToString("\n") { it.id.toString() + "    " + it.description })
+
+            val rootView = PermTree(PermissionService.INSTANCE.rootPermission)
+            val mappings = mutableMapOf<PermissionId, PermTree>()
+            val permListSnapshot = PermissionService.INSTANCE.getRegisteredPermissions().toList()
+
+            permListSnapshot.forEach { perm ->
+                mappings[perm.id] = PermTree(perm)
+            }
+            mappings[rootView.perm.id] = rootView
+
+            permListSnapshot.forEach { perm ->
+                if (perm.id == rootView.perm.id) return@forEach
+
+                val parentView = mappings[perm.parent.id] ?: error("Can't find parent of ${perm.id}: ${perm.parent.id}")
+                parentView.sub.add(perm.id)
+            }
+
+            mappings.values.forEach { PermTree.sortView(it) }
+
+            //*:*
+            // |  `-
+            // |- .....
+            // |  |  `-
+            // |  |- ......
+            // |  |  |  `-
+            // |  |  |-
+            val prefixed = 50
+
+            fun render(depth: Int, view: PermTree, sb: AnsiMessageBuilder) {
+                kotlin.run { // render perm id
+                    var doReset = false
+                    val permId = view.perm.id
+                    if (permId == rootView.perm.id || permId.name.endsWith("*")) {
+                        doReset = true
+                        sb.red()
+                    }
+                    sb.append(permId)
+                    if (doReset) {
+                        sb.reset()
+                    }
+                }
+
+                val linePrefixLen =
+                    (depth * 3) + 1 + view.perm.id.let { it.name.length + it.namespace.length } + (if (depth == 0) 0 else 1)
+                val descFlatten = view.perm.description.replace("\r\n", "\n").replace("\r", "\n")
+                if (!descFlatten.contains('\n') && linePrefixLen < prefixed) {
+                    if (descFlatten.isNotBlank()) {
+                        repeat(prefixed - linePrefixLen) { sb.append(' ') }
+                        sb.append("    ").append(descFlatten)
+                    }
+                } else {
+                    descFlatten.splitToSequence('\n').forEach { line ->
+                        sb.append('\n')
+                        renderDepth(depth, sb)
+                        sb.append(" |  `- ").append(line)
+                    }
+                }
+                sb.append('\n')
+
+                view.sub.forEach { sub ->
+                    val subView = mappings[sub] ?: return@forEach
+                    renderDepth(depth, sb)
+                    sb.append(" |- ")
+                    render(depth + 1, subView, sb)
+                }
+            }
+            sendAnsiMessage {
+                render(0, rootView, this)
+            }
         }
     }
 
@@ -284,11 +438,13 @@ public object BuiltInCommands {
         ConsoleCommandOwner, "autoLogin", "自动登录",
         description = "自动登录设置",
         overrideContext = buildCommandArgumentContext {
+            @OptIn(ConsoleExperimentalApi::class)
             ConfigurationKey::class with ConfigurationKey.Parser
         }
     ), BuiltInCommandInternal {
         @Description("查看自动登录账号列表")
         @SubCommand
+        @OptIn(ConsoleExperimentalApi::class)
         public suspend fun CommandSender.list() {
             val config = DataScope.get<AutoLoginConfig>()
             sendMessage(buildString {
@@ -315,6 +471,7 @@ public object BuiltInCommands {
 
         @Description("添加自动登录, passwordKind 可选 PLAIN 或 MD5")
         @SubCommand
+        @ConsoleExperimentalApi
         public suspend fun CommandSender.add(account: Long, password: String, passwordKind: PasswordKind = PLAIN) {
             val config = DataScope.get<AutoLoginConfig>()
             val accountStr = account.toString()
@@ -326,6 +483,7 @@ public object BuiltInCommands {
             sendMessage("已成功添加 '$account'.")
         }
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("清除所有配置")
         @SubCommand
         public suspend fun CommandSender.clear() {
@@ -334,6 +492,7 @@ public object BuiltInCommands {
             sendMessage("已清除所有自动登录配置.")
         }
 
+        @OptIn(ConsoleExperimentalApi::class)
         @Description("删除一个账号")
         @SubCommand
         public suspend fun CommandSender.remove(account: Long) {
@@ -346,6 +505,7 @@ public object BuiltInCommands {
             sendMessage("账号 '$account' 未配置自动登录.")
         }
 
+        @ConsoleExperimentalApi
         @Description("设置一个账号的一个配置项")
         @SubCommand
         public suspend fun CommandSender.setConfig(account: Long, configKey: ConfigurationKey, value: String) {
@@ -370,6 +530,7 @@ public object BuiltInCommands {
         }
 
         @Description("删除一个账号的一个配置项")
+        @ConsoleExperimentalApi
         @SubCommand
         public suspend fun CommandSender.removeConfig(account: Long, configKey: ConfigurationKey) {
             val config = DataScope.get<AutoLoginConfig>()
@@ -402,13 +563,13 @@ public object BuiltInCommands {
             val objectPendingFinalizationCount: Int
         }
 
-        internal val memoryUsageGet: MemoryUsageGet = kotlin.runCatching {
+        private val memoryUsageGet: MemoryUsageGet = kotlin.runCatching {
             ByMemoryMXBean
         }.getOrElse { ByRuntime }
 
         internal object ByMemoryMXBean : MemoryUsageGet {
-            val memoryMXBean = ManagementFactory.getMemoryMXBean()
-            val MemoryUsage.m: MUsage
+            private val memoryMXBean: MemoryMXBean = ManagementFactory.getMemoryMXBean()
+            private val MemoryUsage.m: MUsage
                 get() = MUsage(
                     committed, init, used, max
                 )
@@ -444,6 +605,7 @@ public object BuiltInCommands {
             val max: Long,
         )
 
+        @OptIn(MiraiExperimentalApi::class)
         @Handler
         public suspend fun CommandSender.handle() {
             sendAnsiMessage {
@@ -472,11 +634,26 @@ public object BuiltInCommands {
                 reset().append("\n\n")
 
                 append("Plugins: ")
-                if (MiraiConsole.pluginManagerImpl.resolvedPlugins.isEmpty()) {
+
+                val resolvedPlugins = MiraiConsole.pluginManagerImpl.resolvedPlugins.asSequence()
+                    .filter { it !is MiraiConsoleAsPlugin } // skip mirai-console in status
+                    .toList()
+
+                if (resolvedPlugins.isEmpty()) {
                     gray().append("<none>")
                 } else {
-                    MiraiConsole.pluginManagerImpl.resolvedPlugins.joinTo(this) { plugin ->
-                        green().append(plugin.name).reset().append(" v").gold()
+                    resolvedPlugins.joinTo(this) { plugin ->
+                        if (plugin.isEnabled) {
+                            green().append(plugin.name).reset().append(" v").gold()
+                        } else {
+                            red().append(plugin.name)
+                            if (plugin is JvmPluginInternal) {
+                                append("(").append(plugin.currentPluginStatus.name.lowercase()).append(")")
+                            } else {
+                                append("(disabled)")
+                            }
+                            reset().append(" v").gold()
+                        }
                         plugin.version.toString()
                     }
                 }
@@ -519,9 +696,11 @@ public object BuiltInCommands {
                                         v < e50 -> {
                                             green()
                                         }
+
                                         v < e90 -> {
                                             lightRed()
                                         }
+
                                         else -> {
                                             red()
                                         }
@@ -541,35 +720,6 @@ public object BuiltInCommands {
             }
         }
 
-        private const val MEM_B = 1024L
-        private const val MEM_KB = 1024L shl 10
-        private const val MEM_MB = 1024L shl 20
-        private const val MEM_GB = 1024L shl 30
-
-        @Suppress("NOTHING_TO_INLINE")
-        private inline fun StringBuilder.appendDouble(number: Double): StringBuilder =
-            append(floor(number * 100) / 100)
-
-        private fun renderMemoryUsageNumber(num: Long) = buildString {
-            when {
-                num == -1L -> {
-                    append(num)
-                }
-                num < MEM_B -> {
-                    append(num).append("B")
-                }
-                num < MEM_KB -> {
-                    appendDouble(num / 1024.0).append("KB")
-                }
-                num < MEM_MB -> {
-                    appendDouble((num ushr 10) / 1024.0).append("MB")
-                }
-                else -> {
-                    appendDouble((num ushr 20) / 1024.0).append("GB")
-                }
-            }
-        }
-
         private fun AnsiMessageBuilder.renderMemoryUsage(usage: MUsage) = arrayOf(
             renderMemoryUsageNumber(usage.committed),
             renderMemoryUsageNumber(usage.init),
@@ -581,23 +731,6 @@ public object BuiltInCommands {
             usage.used,
             usage.max,
         )
-
-        private var emptyLine = "    ".repeat(10)
-        private fun Appendable.emptyLine(size: Int) {
-            if (emptyLine.length <= size) {
-                emptyLine = String(CharArray(size) { ' ' })
-            }
-            append(emptyLine, 0, size)
-        }
-
-        private inline fun AnsiMessageBuilder.renderMUNum(size: Int, contentLength: Int, code: () -> Unit) {
-            val s = size - contentLength
-            val left = s / 2
-            val right = s - left
-            emptyLine(left)
-            code()
-            emptyLine(right)
-        }
 
         private fun calculateMax(
             vararg lines: Array<String>

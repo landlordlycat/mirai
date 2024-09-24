@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -14,7 +14,6 @@
 package net.mamoe.mirai.message.data
 
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.*
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -33,10 +32,8 @@ import net.mamoe.mirai.message.data.MessageChain.Companion.serializeToJsonString
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.data.MessageSource.Key.recall
 import net.mamoe.mirai.message.data.MessageSource.Key.recallIn
-import net.mamoe.mirai.utils.DeprecatedSinceMirai
-import net.mamoe.mirai.utils.MiraiExperimentalApi
-import net.mamoe.mirai.utils.NotStableForInheritance
-import net.mamoe.mirai.utils.safeCast
+import net.mamoe.mirai.message.data.visitor.MessageVisitor
+import net.mamoe.mirai.utils.*
 import java.util.stream.Stream
 import kotlin.reflect.KProperty
 import kotlin.streams.asSequence
@@ -146,6 +143,11 @@ import net.mamoe.mirai.console.compiler.common.ResolveContext.Kind.RESTRICTED_AB
  * 例如用户发送了两条内容相同的消息, 但其中一条带有引用回复而另一条没有, 则两条消息的索引可能有变化 (当然内容顺序不会改变, 只是 [QuoteReply] 的位置有可能会变化).
  * 因此在使用直接索引访问时要格外注意兼容性, 故不推荐这种访问方案.
  *
+ * ### 避免索引访问以提高性能
+ *
+ * 自 2.12 起, [MessageChain] 内部结构有性能优化. 该优化大幅降低元素数量多的 [MessageChain] 的连接的时间复杂度.
+ * 性能优化默认生效, 但若使用 [get], [subList] 等 [List] 于 [Collection] 之外的方法时则会让该优化失效 (相比 2.12 以前不会丢失性能, 只是没有优化).
+ *
  * ## 撤回和引用
  *
  * 要撤回消息, 查看 [MessageSource]
@@ -191,6 +193,10 @@ import net.mamoe.mirai.console.compiler.common.ResolveContext.Kind.RESTRICTED_AB
 @NotStableForInheritance
 public sealed interface MessageChain :
     Message, List<SingleMessage>, RandomAccess, CodableMessage {
+
+    // 写给 mirai 内部实现者: 优先考虑使用 visitor API 而不是 List 的 API. 这将会提升性能, 对于巨大的通过 `plus` 方式连接的消息链有重大区别.
+    // 即使 [MessageChain] 实现 [RandomAccess], 使用基于 index 的 API 也可能会产生重大性能下降. (不过这本来就是没法避免的, 避免使用 index 属于一种性能优化).
+    // 若你感兴趣原理, 阅读 [Message.followedBy] 和 [CombinedMessage]
 
     /**
      * 获取第一个类型为 [key] 的 [Message] 实例. 若不存在此实例, 返回 `null`.
@@ -252,6 +258,9 @@ public sealed interface MessageChain :
     override fun appendMiraiCodeTo(builder: StringBuilder) {
         forEach { it.safeCast<CodableMessage>()?.appendMiraiCodeTo(builder) }
     }
+
+    @MiraiInternalApi
+    override fun <D, R> accept(visitor: MessageVisitor<D, R>, data: D): R = visitor.visitMessageChain(this, data)
 
     /**
      * 将 [MessageChain] 作为 `List<SingleMessage>` 序列化. 使用 [多态序列化][Polymorphic].
@@ -333,31 +342,72 @@ public sealed interface MessageChain :
 
         /**
          * 解析形如 "[mirai:]" 的 mirai 码, 即 [CodableMessage.serializeToMiraiCode] 返回的内容.
+         * @param contact 解析语境
          * @see MiraiCode.deserializeMiraiCode
+         * @since 2.13
          */
         @JvmStatic
-        public fun MessageChain.deserializeFromMiraiCode(miraiCode: String, contact: Contact? = null): MessageChain =
+        public fun deserializeFromMiraiCode(miraiCode: String, contact: Contact? = null): MessageChain =
             miraiCode.deserializeMiraiCode(contact)
+
+
+        /**
+         * 解析形如 "[mirai:]" 的 mirai 码, 即 [CodableMessage.serializeToMiraiCode] 返回的内容.
+         * @see MiraiCode.deserializeMiraiCode
+         */
+        @Deprecated(
+            "Parameter MessageChain is redundant, use the overload instead.",
+            ReplaceWith(
+                "MessageChain.deserializeFromMiraiCode(miraiCode, contact)",
+                "net.mamoe.mirai.message.data.MessageChain"
+            )
+        )
+        @Suppress("UnusedReceiverParameter")
+        @JvmStatic
+        public fun MessageChain.deserializeFromMiraiCode(miraiCode: String, contact: Contact? = null): MessageChain =
+            MessageChain.deserializeFromMiraiCode(miraiCode, contact)
     }
 }
 
 /**
- * 不含任何元素的 [MessageChain].
+ * 返回一个不含任何元素的 [MessageChain].
+ *
+ * @since 2.12
+ */
+// Java: MessageUtils.emptyMessageChain()
+@Suppress("DEPRECATION", "DEPRECATION_ERROR")
+public fun emptyMessageChain(): MessageChain = EmptyMessageChain
+
+/**
+ * 不含任何元素的 [MessageChain]. 已弃用, 请使用 [emptyMessageChain].
  */
 //@Serializable(MessageChain.Serializer::class)
-public object EmptyMessageChain : MessageChain, List<SingleMessage> by emptyList() {
+@Deprecated(
+    "Please use emptyMessageChain()",
+    replaceWith = ReplaceWith("emptyMessageChain()", "net.mamoe.mirai.message.data.emptyMessageChain"),
+    level = DeprecationLevel.ERROR
+)
+@DeprecatedSinceMirai(
+    warningSince = "2.12",
+    errorSince = "2.14"
+) // make internal after deprecation cycle, but keep as @PublishedApi!
+@Suppress("EXPOSED_SUPER_CLASS")
+public object EmptyMessageChain : MessageChain, List<SingleMessage> by emptyList(),
+    AbstractMessageChain(), DirectSizeAccess, DirectToStringAccess {
+
     override val size: Int get() = 0
 
     override fun toString(): String = ""
     override fun contentToString(): String = ""
     override fun serializeToMiraiCode(): String = ""
 
+    @MiraiInternalApi
+    override val hasConstrainSingle: Boolean
+        get() = false
+
     @MiraiExperimentalApi
     override fun appendMiraiCodeTo(builder: StringBuilder) {
     }
-
-    override fun equals(other: Any?): Boolean = other === this
-    override fun hashCode(): Int = 1
 
     override fun iterator(): Iterator<SingleMessage> = EmptyMessageChainIterator
 
@@ -467,13 +517,7 @@ public inline fun messageChainOf(vararg messages: Message): MessageChain = messa
  */
 @JvmName("newChain")
 public fun Sequence<Message>.toMessageChain(): MessageChain =
-    createMessageChainImplOptimized(this.constrainSingleMessages())
-
-/**
- * 扁平化 [this] 并创建一个 [MessageChain].
- */
-@JvmName("newChain")
-public fun Stream<Message>.toMessageChain(): MessageChain = this.asSequence().toMessageChain()
+    LinearMessageChainImpl.create(ConstrainSingleHelper.constrainSingleMessages(this))
 
 /**
  * 扁平化 [this] 并创建一个 [MessageChain].
@@ -506,13 +550,15 @@ public inline fun Array<out Message>.toMessageChain(): MessageChain = this.asSeq
 @JvmName("newChain")
 public fun Message.toMessageChain(): MessageChain = when (this) {
     is MessageChain -> (this as List<SingleMessage>).toMessageChain()
-    else -> MessageChainImpl(
-        listOf(
-            this as? SingleMessage ?: error("Message is either MessageChain nor SingleMessage: $this")
-        )
-    )
+    is SingleMessage -> LinearMessageChainImpl.create(listOf(this), this is ConstrainSingle)
+    else -> error("Message is either MessageChain nor SingleMessage: $this")
 }
 
+/**
+ * 扁平化 [this] 并创建一个 [MessageChain].
+ */
+@JvmName("newChain")
+public fun Stream<Message>.toMessageChain(): MessageChain = this.asSequence().toMessageChain()
 
 // region delegate
 

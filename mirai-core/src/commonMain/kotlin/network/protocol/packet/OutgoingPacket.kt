@@ -10,46 +10,48 @@
 package net.mamoe.mirai.internal.network.protocol.packet
 
 
-import kotlinx.io.core.*
+import io.ktor.utils.io.core.*
+import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.protobuf.ProtoBuf
 import net.mamoe.mirai.internal.QQAndroidBot
-import net.mamoe.mirai.internal.network.Packet
-import net.mamoe.mirai.internal.network.QQAndroidClient
-import net.mamoe.mirai.internal.network.appClientVersion
+import net.mamoe.mirai.internal.network.*
 import net.mamoe.mirai.internal.network.components.EcdhInitialPublicKeyUpdater
-import net.mamoe.mirai.internal.network.handler.NetworkHandler
+import net.mamoe.mirai.internal.network.components.encryptServiceOrNull
+import net.mamoe.mirai.internal.network.protocol.data.proto.SSOReserveField
+import net.mamoe.mirai.internal.network.protocol.packet.sso.TRpcRawPacket
+import net.mamoe.mirai.internal.spi.EncryptService
+import net.mamoe.mirai.internal.spi.EncryptServiceContext
 import net.mamoe.mirai.internal.utils.io.encryptAndWrite
+import net.mamoe.mirai.internal.utils.io.serialization.writeProtoBuf
 import net.mamoe.mirai.internal.utils.io.writeHex
 import net.mamoe.mirai.internal.utils.io.writeIntLVPacket
-import net.mamoe.mirai.utils.EMPTY_BYTE_ARRAY
-import net.mamoe.mirai.utils.Either
+import net.mamoe.mirai.utils.*
 import net.mamoe.mirai.utils.Either.Companion.fold
-import net.mamoe.mirai.utils.KEY_16_ZEROS
-import net.mamoe.mirai.utils.TestOnly
 import kotlin.random.Random
 
-@kotlin.Suppress("unused")
+@Suppress("unused")
 internal class OutgoingPacketWithRespType<R : Packet?> constructor(
-    name: String?,
+    remark: String?,
     commandName: String,
     sequenceId: Int,
     delegate: ByteReadPacket
-) : OutgoingPacket(name, commandName, sequenceId, delegate)
+) : OutgoingPacket(remark, commandName, sequenceId, delegate)
 
 internal open class OutgoingPacket constructor(
-    name: String?,
+    remark: String?,
     val commandName: String,
     val sequenceId: Int,
     delegate: ByteReadPacket
 ) {
     val delegate = delegate.readBytes()
-    val displayName: String = if (name == null) commandName else "$commandName($name)"
+    val displayName: String = if (remark == null) commandName else "$commandName($remark)"
 }
 
 internal class IncomingPacket private constructor(
     val commandName: String,
     val sequenceId: Int,
 
-    val result: Either<Throwable, Packet?>
+    val result: Either<Throwable, Packet?> // exception will be the same as caught from PacketFactory.decode. So they can be ISE, NPE, etc.
 ) {
     companion object {
         operator fun invoke(commandName: String, sequenceId: Int, data: Packet?) =
@@ -76,113 +78,182 @@ internal class IncomingPacket private constructor(
     }
 }
 
-@Suppress("UNCHECKED_CAST")
-internal suspend inline fun <E : Packet> OutgoingPacketWithRespType<E>.sendAndExpect(
-    network: NetworkHandler,
-    timeoutMillis: Long = 5000,
-    retry: Int = 2
-): E = network.sendAndExpect(this, timeoutMillis, retry) as E
+internal enum class PacketEncryptType(val value: Int) {
+    NoEncrypt(0x00) { // 0x00
+        override fun defaultKey(client: QQAndroidClient): ByteArray = NO_ENCRYPT
+    },
+    D2(0x01) { //0x01
+        override fun defaultKey(client: QQAndroidClient): ByteArray {
+            return client.wLoginSigInfo.d2Key
+        }
+    },
+    Empty(0x02) { // 16 zeros,// 0x02
+        override fun defaultKey(client: QQAndroidClient): ByteArray {
+            return KEY_16_ZEROS
+        }
+    },
+    Unknown(-1) {
+        override fun defaultKey(client: QQAndroidClient): ByteArray {
+            error("unreachable")
+        }
+    }
+    ;
 
-@Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE", "UNCHECKED_CAST")
-@kotlin.internal.LowPriorityInOverloadResolution
-internal suspend inline fun <E : Packet> OutgoingPacket.sendAndExpect(
-    network: NetworkHandler,
-    timeoutMillis: Long = 5000,
-    retry: Int = 2
-): E = network.sendAndExpect(this, timeoutMillis, retry) as E
+    inline val codec: Byte get() = ordinal.toByte()
 
-internal suspend inline fun <E : Packet> OutgoingPacketWithRespType<E>.sendAndExpect(
-    bot: QQAndroidBot,
-    timeoutMillis: Long = 5000,
-    retry: Int = 2
-): E = (this@sendAndExpect as OutgoingPacket).sendAndExpect(bot.network, timeoutMillis, retry)
+    abstract fun defaultKey(client: QQAndroidClient): ByteArray
 
-@Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE", "UNCHECKED_CAST")
-@kotlin.internal.LowPriorityInOverloadResolution
-internal suspend inline fun <E : Packet> OutgoingPacket.sendAndExpect(
-    bot: QQAndroidBot,
-    timeoutMillis: Long = 5000,
-    retry: Int = 2
-): E = bot.network.sendAndExpect(this, timeoutMillis, retry) as E
+    companion object {
+        internal fun of(value: Int) = enumValues<PacketEncryptType>().find { it.value == value } ?: Unknown
+    }
+}
 
 
 @Suppress("DuplicatedCode")
-internal inline fun <R : Packet?> OutgoingPacketFactory<R>.buildOutgoingUniPacket(
+internal fun <R : Packet?> buildRawUniPacket(
     client: QQAndroidClient,
-    bodyType: Byte = 1, // 1: PB?
-    name: String? = this.commandName,
-    commandName: String = this.commandName,
-    key: ByteArray = client.wLoginSigInfo.d2Key,
+    encryptMethod: PacketEncryptType = PacketEncryptType.D2,
+    remark: String?,
+    commandName: String,
+    key: ByteArray = encryptMethod.defaultKey(client),
     extraData: ByteReadPacket = BRP_STUB,
+    uin: String = client.uin.toString(),
     sequenceId: Int = client.nextSsoSequenceId(),
     body: BytePacketBuilder.(sequenceId: Int) -> Unit
 ): OutgoingPacketWithRespType<R> {
 
-    return OutgoingPacketWithRespType(name, commandName, sequenceId, buildPacket {
+    return OutgoingPacketWithRespType(remark, commandName, sequenceId, buildPacket {
         writeIntLVPacket(lengthOffset = { it + 4 }) {
-            writeInt(0x0B)
-            writeByte(bodyType)
+            writeInt(0x0B) // req type simple
+            writeByte(encryptMethod.codec)
             writeInt(sequenceId)
             writeByte(0)
-            client.uin.toString().let {
+            uin.let {
                 writeInt(it.length + 4)
-                writeStringUtf8(it)
+                writeText(it)
             }
-            encryptAndWrite(key) {
-                writeUniPacket(commandName, client.outgoingPacketSessionId, extraData) {
-                    body(sequenceId)
+            val encryptWorker = client.bot.encryptServiceOrNull
+            val bodyBytes = buildPacket { body(sequenceId) }.readBytes()
+            val signDataPacket = if (encryptWorker != null) {
+
+                val signResult = encryptWorker.qSecurityGetSign(
+                    EncryptServiceContext(client.uin),
+                    sequenceId,
+                    commandName,
+                    bodyBytes
+                )
+                if (signResult != null)
+                    buildPacket {
+                        writeProtoBuf(
+                            SSOReserveField.ReserveFields.serializer(),
+                            SSOReserveField.ReserveFields(
+                                flag = 0,
+                                qimei = client.qimei16?.toByteArray() ?: EMPTY_BYTE_ARRAY,
+                                newconnFlag = 0,
+                                uid = client.uin.toString(),
+                                imsi = 0,
+                                networkType = 1,
+                                ipStackType = 1,
+                                messageType = 0,
+                                secInfo = SSOReserveField.SsoSecureInfo(
+                                    secSig = signResult.sign,
+                                    secDeviceToken = signResult.token,
+                                    secExtra = signResult.extra
+                                ),
+                                ssoIpOrigin = 0,
+                            )
+                        )
+                    } else BRP_STUB
+            } else BRP_STUB
+
+            if (signDataPacket != BRP_STUB && (extraData != BRP_STUB && extraData.remaining != 0L)) {
+                throw IllegalStateException("$commandName cmd needs sign but has extraData!")
+            }
+
+            if (encryptMethod === PacketEncryptType.NoEncrypt) {
+                writeUniPacket(
+                    commandName,
+                    client.outgoingPacketSessionId,
+                    if (signDataPacket == BRP_STUB) {
+                        extraData
+                    } else {
+                        signDataPacket
+                    },
+                    (client.qimei16?.encodeToByteArray() ?: EMPTY_BYTE_ARRAY)
+                ) {
+                    writeFully(bodyBytes)
+                }
+            } else {
+                encryptAndWrite(key) {
+                    writeUniPacket(
+                        commandName,
+                        client.outgoingPacketSessionId,
+                        if (signDataPacket == BRP_STUB) {
+                            extraData
+                        } else {
+                            signDataPacket
+                        },
+                        (client.qimei16?.encodeToByteArray() ?: EMPTY_BYTE_ARRAY)
+                    ) {
+                        writeFully(bodyBytes)
+                    }
                 }
             }
         }
     })
 }
 
+@Suppress("DuplicatedCode", "NOTHING_TO_INLINE")
+internal inline fun <R : Packet?> OutgoingPacketFactory<R>.buildOutgoingUniPacket(
+    client: QQAndroidClient,
+    encryptMethod: PacketEncryptType = PacketEncryptType.D2,
+    remark: String? = this.commandName,
+    commandName: String = this.commandName,
+    key: ByteArray = encryptMethod.defaultKey(client),
+    extraData: ByteReadPacket = BRP_STUB,
+    uin: String = client.uin.toString(),
+    sequenceId: Int = client.nextSsoSequenceId(),
+    noinline body: BytePacketBuilder.(sequenceId: Int) -> Unit
+): OutgoingPacketWithRespType<R> =
+    buildRawUniPacket(client, encryptMethod, remark, commandName, key, extraData, uin, sequenceId, body)
 
+@Suppress("NOTHING_TO_INLINE")
 internal inline fun <R : Packet?> IncomingPacketFactory<R>.buildResponseUniPacket(
     client: QQAndroidClient,
-    bodyType: Byte = 1, // 1: PB?
-    name: String? = this.responseCommandName,
+    encryptMethod: PacketEncryptType = PacketEncryptType.D2, // 1: PB?
+    remark: String? = this.responseCommandName,
     commandName: String = this.responseCommandName,
-    key: ByteArray = client.wLoginSigInfo.d2Key,
+    key: ByteArray = encryptMethod.defaultKey(client),
     extraData: ByteReadPacket = BRP_STUB,
     sequenceId: Int = client.nextSsoSequenceId(),
-    body: BytePacketBuilder.(sequenceId: Int) -> Unit = {}
-): OutgoingPacketWithRespType<R> {
-    @Suppress("DuplicatedCode")
-    return OutgoingPacketWithRespType(name, commandName, sequenceId, buildPacket {
-        writeIntLVPacket(lengthOffset = { it + 4 }) {
-            writeInt(0x0B)
-            writeByte(bodyType)
-            writeInt(sequenceId)
-            writeByte(0)
-            client.uin.toString().let {
-                writeInt(it.length + 4)
-                writeStringUtf8(it)
-            }
-            encryptAndWrite(key) {
-                writeUniPacket(commandName, client.outgoingPacketSessionId, extraData) {
-                    body(sequenceId)
-                }
-            }
-        }
-    })
-}
+    noinline body: BytePacketBuilder.(sequenceId: Int) -> Unit = {}
+): OutgoingPacketWithRespType<R> = buildRawUniPacket(
+    client = client,
+    encryptMethod = encryptMethod,
+    remark = remark,
+    commandName = commandName,
+    key = key,
+    extraData = extraData,
+    sequenceId = sequenceId,
+    body = body
+)
 
 
 private inline fun BytePacketBuilder.writeUniPacket(
     commandName: String,
-    unknownData: ByteArray,
+    outgoingPacketSessionId: ByteArray,
     extraData: ByteReadPacket = BRP_STUB,
-    body: BytePacketBuilder.() -> Unit
+    qimei16: ByteArray = EMPTY_BYTE_ARRAY,
+    crossinline body: BytePacketBuilder.() -> Unit
 ) {
     writeIntLVPacket(lengthOffset = { it + 4 }) {
         commandName.let {
             writeInt(it.length + 4)
-            writeStringUtf8(it)
+            writeText(it)
         }
 
-        writeInt(4 + 4)
-        writeFully(unknownData) //  02 B0 5B 8B
+        writeInt(outgoingPacketSessionId.size + 4)
+        writeFully(outgoingPacketSessionId) //  02 B0 5B 8B
 
         if (extraData === BRP_STUB) {
             writeInt(0x04)
@@ -190,6 +261,9 @@ private inline fun BytePacketBuilder.writeUniPacket(
             writeInt((extraData.remaining + 4).toInt())
             writePacket(extraData)
         }
+
+        writeInt(qimei16.size + 4)
+        writeFully(qimei16)
     }
 
     // body
@@ -201,33 +275,36 @@ internal val NO_ENCRYPT: ByteArray = ByteArray(0)
 /**
  * com.tencent.qphone.base.util.CodecWarpper#encodeRequest(int, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, byte[], int, int, java.lang.String, byte, byte, byte, byte[], byte[], boolean)
  */
-internal inline fun <R : Packet?> OutgoingPacketFactory<R>.buildLoginOutgoingPacket(
+internal fun <R : Packet?> OutgoingPacketFactory<R>.buildLoginOutgoingPacket(
     client: QQAndroidClient,
-    bodyType: Byte,
-    extraData: ByteArray = EMPTY_BYTE_ARRAY,
-    name: String? = null,
+    encryptMethod: PacketEncryptType,
+    uin: String = client.uin.toString(),
+    extraData: ByteArray = if (encryptMethod == PacketEncryptType.D2) client.wLoginSigInfo.d2.data else EMPTY_BYTE_ARRAY,
+    remark: String? = null,
     commandName: String = this.commandName,
-    key: ByteArray = KEY_16_ZEROS,
+    key: ByteArray = encryptMethod.defaultKey(client),
     body: BytePacketBuilder.(sequenceId: Int) -> Unit
 ): OutgoingPacketWithRespType<R> {
     val sequenceId: Int = client.nextSsoSequenceId()
 
-    return OutgoingPacketWithRespType(name, commandName, sequenceId, buildPacket {
+    return OutgoingPacketWithRespType(remark, commandName, sequenceId, buildPacket {
         writeIntLVPacket(lengthOffset = { it + 4 }) {
-            writeInt(0x00_00_00_0A)
-            writeByte(bodyType)
-            extraData.let {
+            writeInt(0x00_00_00_0A) // packet login
+            writeByte(encryptMethod.codec) // encrypt type
+
+            extraData.let { // actually d2 key if encryptMethod = d2
                 writeInt(it.size + 4)
                 writeFully(it)
             }
+
             writeByte(0x00)
 
-            client.uin.toString().let {
+            uin.let {
                 writeInt(it.length + 4)
-                writeStringUtf8(it)
+                writeText(it)
             }
 
-            if (key === NO_ENCRYPT) {
+            if (encryptMethod == PacketEncryptType.NoEncrypt) {
                 body(sequenceId)
             } else {
                 encryptAndWrite(key) { body(sequenceId) }
@@ -238,8 +315,41 @@ internal inline fun <R : Packet?> OutgoingPacketFactory<R>.buildLoginOutgoingPac
 
 private inline val BRP_STUB get() = ByteReadPacket.Empty
 
+internal fun createChannelProxy(bot: QQAndroidBot): EncryptService.ChannelProxy {
+    return object : EncryptService.ChannelProxy {
+        override suspend fun sendMessage(
+            remark: String,
+            commandName: String,
+            uin: Long,
+            data: ByteArray
+        ): EncryptService.ChannelResult? {
+            if (commandName.startsWith(TRpcRawPacket.COMMAND_PREFIX)) {
+                val client = bot.client
+                val packet = client.bot.network.sendAndExpect(
+                    TRpcRawPacket.buildLoginOutgoingPacket(
+                        client = client,
+                        encryptMethod = PacketEncryptType.Empty,
+                        uin = uin.toString(),
+                        remark = remark,
+                        commandName = commandName,
+                    ) {
+                        writeSsoPacket(
+                            client,
+                            client.subAppId,
+                            sequenceId = it,
+                            commandName = commandName,
+                            body = { writeFully(data) }
+                        )
+                    }
+                )
+                return EncryptService.ChannelResult(commandName, packet.data)
+            }
+            return null
+        }
+    }
+}
 
-internal inline fun BytePacketBuilder.writeSsoPacket(
+internal fun BytePacketBuilder.writeSsoPacket(
     client: QQAndroidClient,
     subAppId: Long,
     commandName: String,
@@ -265,6 +375,37 @@ internal inline fun BytePacketBuilder.writeSsoPacket(
      *
      * 00 00 00 04
      */
+    val encryptWorker = client.bot.encryptServiceOrNull
+    val bodyBytes = buildPacket(body).readBytes()
+    val reserveField = if (encryptWorker != null) {
+
+        val signResult = encryptWorker.qSecurityGetSign(
+            EncryptServiceContext(client.uin),
+            sequenceId,
+            commandName,
+            bodyBytes
+        )
+        if (signResult != null)
+            ProtoBuf.encodeToByteArray(
+                SSOReserveField.ReserveFields(
+                    flag = 0,
+                    qimei = client.qimei16?.toByteArray() ?: EMPTY_BYTE_ARRAY,
+                    newconnFlag = 0,
+                    uid = client.uin.toString(),
+                    imsi = 0,
+                    networkType = 1,
+                    ipStackType = 1,
+                    messageType = 0,
+                    secInfo = SSOReserveField.SsoSecureInfo(
+                        secSig = signResult.sign,
+                        secDeviceToken = signResult.token,
+                        secExtra = signResult.extra
+                    ),
+                    ssoIpOrigin = 0,
+                )
+            ) else EMPTY_BYTE_ARRAY
+    } else EMPTY_BYTE_ARRAY
+
     writeIntLVPacket(lengthOffset = { it + 4 }) {
         writeInt(sequenceId)
         writeInt(subAppId.toInt())
@@ -277,36 +418,37 @@ internal inline fun BytePacketBuilder.writeSsoPacket(
             writeInt((extraData.remaining + 4).toInt())
             writePacket(extraData)
         }
-        commandName.let {
-            writeInt(it.length + 4)
-            writeStringUtf8(it)
-        }
 
-        writeInt(4 + 4)
+        writeInt(commandName.length + 4)
+        writeText(commandName)
+
+        writeInt(client.outgoingPacketSessionId.size + 4)
         writeFully(client.outgoingPacketSessionId) //  02 B0 5B 8B
 
-        client.device.imei.let {
-            writeInt(it.length + 4)
-            writeStringUtf8(it)
-        }
+        writeInt(client.device.imei.length + 4)
+        writeText(client.device.imei)
+        writeInt(0x4)
 
-        writeInt(4)
+        writeShort((client.ksid.size + 2).toShort())
+        writeFully(client.ksid)
 
-        client.ksid.let {
-            writeShort((it.size + 2).toShort())
-            writeFully(it)
-        }
+        writeInt(reserveField.size + 4)
+        writeFully(reserveField)
 
-        writeInt(4)
+
+        val qimei16Bytes = client.qimei16?.toByteArray() ?: EMPTY_BYTE_ARRAY
+        writeInt(qimei16Bytes.size + 4)
+        writeFully(qimei16Bytes)
     }
 
     // body
-    writeIntLVPacket(lengthOffset = { it + 4 }, builder = body)
+    writeIntLVPacket(lengthOffset = { it + 4 }, builder = { writeFully(bodyBytes) })
 }
 
 internal fun BytePacketBuilder.writeOicqRequestPacket(
     client: QQAndroidClient,
-    encryptMethod: EncryptMethod = EncryptMethodECDH(client.bot.components[EcdhInitialPublicKeyUpdater].getECDHWithPublicKey()),
+    uin: Long = client.uin,
+    encryptMethod: EncryptMethod = EncryptMethodEcdh(client.bot.components[EcdhInitialPublicKeyUpdater].getQQEcdh()),
     commandId: Int,
     bodyBlock: BytePacketBuilder.() -> Unit
 ) {
@@ -316,7 +458,7 @@ internal fun BytePacketBuilder.writeOicqRequestPacket(
     writeShort(8001)
     writeShort(commandId.toShort())
     writeShort(1) // const??
-    writeInt(client.uin.toInt())
+    writeInt(uin.toInt())
     writeByte(3) // originally const
     writeByte(encryptMethod.id.toByte())
     writeByte(0) // const8_always_0

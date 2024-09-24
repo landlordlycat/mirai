@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -17,6 +17,7 @@ package net.mamoe.mirai.console.command
 import kotlinx.coroutines.CoroutineScope
 import me.him188.kotlin.jvm.blocking.bridge.JvmBlockingBridge
 import net.mamoe.mirai.Bot
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
 import net.mamoe.mirai.console.MiraiConsole
 import net.mamoe.mirai.console.MiraiConsoleImplementation
 import net.mamoe.mirai.console.command.CommandSender.Companion.asCommandSender
@@ -28,8 +29,9 @@ import net.mamoe.mirai.console.internal.data.qualifiedNameOrTip
 import net.mamoe.mirai.console.permission.AbstractPermitteeId
 import net.mamoe.mirai.console.permission.Permittee
 import net.mamoe.mirai.console.permission.PermitteeId
-import net.mamoe.mirai.console.util.ConsoleExperimentalApi
-import net.mamoe.mirai.console.util.MessageScope
+import net.mamoe.mirai.console.plugin.Plugin
+import net.mamoe.mirai.console.plugin.name
+import net.mamoe.mirai.console.util.*
 import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.event.events.*
 import net.mamoe.mirai.message.MessageReceipt
@@ -42,6 +44,8 @@ import kotlin.contracts.InvocationKind
 import kotlin.contracts.contract
 import kotlin.coroutines.CoroutineContext
 
+// region base interface define
+
 /**
  * 指令发送者.
  *
@@ -51,9 +55,9 @@ import kotlin.coroutines.CoroutineContext
  * - [MessageEvent.toCommandSender]
  * - [FriendMessageEvent.toCommandSender]
  * - [GroupMessageEvent.toCommandSender]
- * - [TempMessageEvent.toCommandSender]
  * - [StrangerMessageEvent.toCommandSender]
  * - [OtherClientMessageEvent.toCommandSender]
+ * - [MessageSyncEvent.toCommandSender]
  *
  * - [Member.asCommandSender]
  * - [NormalMember.asTempCommandSender]
@@ -64,9 +68,11 @@ import kotlin.coroutines.CoroutineContext
  * - [OtherClient.asCommandSender]
  *
  * ## 实现 [CommandSender]
- * 除 Console 前端外, 在任何时候都不要实现 [CommandSender] (包括使用委托). 必须使用上述扩展获取 [CommandSender] 实例.
+ * 在任何时候都不要实现 [CommandSender] (包括使用委托). 必须使用上述扩展获取 [CommandSender] 实例.
  *
- * Console 前端可实现 [ConsoleCommandSender]
+ * 除了以下情况:
+ * - Console 前端可实现 [ConsoleCommandSender]
+ * - 插件可继承 [AbstractPluginCustomCommandSender]
  *
  * ## 子类型
  *
@@ -74,6 +80,7 @@ import kotlin.coroutines.CoroutineContext
  *
  * [AbstractCommandSender] 是密封类, 一级子类为:
  * - [AbstractUserCommandSender] 代表用户
+ * - [AbstractPluginCustomCommandSender] 代表插件
  * - [ConsoleCommandSender] 代表控制台
  *
  * 二级子类, 当指令由插件 [主动执行][CommandManager.executeCommand] 时, 插件应使用 [toCommandSender] 或 [asCommandSender], 因此,
@@ -97,35 +104,45 @@ import kotlin.coroutines.CoroutineContext
  *                 CoroutineScope
  *                        ↑
  *                        |
- *                  CommandSender <---------+---------------+-------------------------------+
- *                        ↑                 |               |                               |
- *                        |                 |               |                               |
- *                        |     UserCommandSender   GroupAwareCommandSender     CommandSenderOnMessage
- *                        |                 ↑               ↑                               ↑
- *                        |                 |               |                               |
- *               AbstractCommandSender      |               |                               |
- *                        ↑                 |               |                               |
- *                        | sealed          |               |                               |
- *          +-------------+-------------+   |               |                               |
- *          |                           |   |               |                               |
- *          |                           |   |               |                               |      }
- * ConsoleCommandSender    AbstractUserCommandSender        |                               |      } 一级子类
- *                                      ↑                   |                               |      }
- *                                      | sealed            |                               |
- *                                      |                   |                               |
- *               +----------------------+                   |                               |
- *               |                      |                   |                               |
- *               |                      +------+------------+---------------+               |
- *               |                             |                            |               |
- *               |                             |                            |               |      }
- *       FriendCommandSender          MemberCommandSender           TempCommandSender       |      } 二级子类
- *               ↑                             ↑                            ↑               |      }
- *               |                             |                            |               |
- *               |                             |                            |               |      }
- *  FriendCommandSenderOnMessage  MemberCommandSenderOnMessage  TempCommandSenderOnMessage  |      } 三级子类
- *               |                             |                            |               |      }
- *               |                             |                            |               |
- *               +-----------------------------+----------------------------+---------------+
+ *     +----------> CommandSender <---------+---------------------+---------------------------------------------------+
+ *     |                                      ↑                 |                     |                               |
+ *     |                                      |                 |                     |                               |
+ *  SystemCommandSender <-------+             |     UserCommandSender   GroupAwareCommandSender     CommandSenderOnMessage
+ *     ↑                        |             |                 ↑                     ↑                               ↑
+ *  PluginCustomCommandSender   |             |                 |                     |                               |
+ *     ↑                        |             |                 |                     |                               |
+ *     |          +-------------+    AbstractCommandSender      |                     |                               |
+ *     |          |                           ↑                 |                     |                               |
+ *     |          |                           | sealed          |                     |                               |
+ *     |          |           +---------------+-------------+   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |
+ *     |          |           |               |             |   |                     |                               |      }
+ *     |     ConsoleCommandSender             |          AbstractUserCommandSender    |                               |      }
+ *     |                                      |             ↑                         |                               |      } 一级子类
+ *   AbstractPluginCustomCommandSender -------+             |                         |                               |      }
+ *                                                          |                         |                               |      }
+ *                                                          |                         |                               |
+ *                                                          |                         |                               |
+ *                                                          | sealed                  |                               |
+ *                                                          |                         |                               |
+ *                                   +----------------------+                         |                               |
+ *                                   |                      |                         |                               |
+ *                                   |                      +------+------------+---------------+                     |
+ *                                   |                             |                            |                     |
+ *                                   |                             |                            |                     |      }
+ *                           FriendCommandSender          MemberCommandSender         GroupTempCommandSender          |      } 二级子类
+ *                                   ↑                             ↑                            ↑                     |      }
+ *                                   |                             |                            |                     |
+ *                                   |                             |                            |                     |      }
+ *                      FriendCommandSenderOnMessage  MemberCommandSenderOnMessage  GroupTempCommandSenderOnMessage   |      } 三级子类
+ *                                   |                             |                            |                     |      }
+ *                                   |                             |                            |                     |
+ *                                   +-----------------------------+----------------------------+---------------------+
  * ```
  *
  * ## Scoping: [MessageScope]
@@ -137,6 +154,7 @@ import kotlin.coroutines.CoroutineContext
  * @see UserCommandSender  [User] ([群成员][Member], [好友][Friend])
  * @see toCommandSender
  * @see asCommandSender
+ * @see PluginCustomCommandSender 自定义 CommandSender
  */
 public interface CommandSender : CoroutineScope, Permittee {
     /**
@@ -227,6 +245,15 @@ public interface CommandSender : CoroutineScope, Permittee {
             OtherClientCommandSenderOnMessage(this)
 
         /**
+         * 构造 [OtherClientCommandSenderOnMessageSync]
+         * @since 2.13
+         */
+        @JvmStatic
+        @JvmName("from")
+        public fun MessageSyncEvent.toCommandSender(): OtherClientCommandSenderOnMessageSync =
+            OtherClientCommandSenderOnMessageSync(this)
+
+        /**
          * 构造 [CommandSenderOnMessage]
          */
         @JvmStatic
@@ -238,6 +265,7 @@ public interface CommandSender : CoroutineScope, Permittee {
             is GroupTempMessageEvent -> toCommandSender()
             is StrangerMessageEvent -> toCommandSender()
             is OtherClientMessageEvent -> toCommandSender()
+            is MessageSyncEvent -> toCommandSender()
             else -> throw IllegalArgumentException("Unsupported MessageEvent: ${this::class.qualifiedNameOrTip}")
         } as CommandSenderOnMessage<T>
 
@@ -304,6 +332,135 @@ public interface CommandSender : CoroutineScope, Permittee {
 }
 
 /**
+ * 一个来自内部系统的命令执行者.
+ *
+ * 包括
+ * - [PluginCustomCommandSender] - 来自插件的命令执行者
+ * - [ConsoleCommandSender] - 控制台
+ */
+public sealed interface SystemCommandSender : CommandSender {
+    /**
+     * 当前 [SystemCommandSender] 是否支持 Ansi 信息
+     *
+     * @see AnsiMessageBuilder
+     * @see CommandSender.sendAnsiMessage
+     */
+    public val isAnsiSupported: Boolean
+}
+
+/**
+ * 一个来自插件自行实现的 [CommandSender].
+ *
+ * [PluginCustomCommandSender] 不一定拥有全部的权限. [PluginCustomCommandSender] 可以以其他身份执行命令.
+ * 默认情况下 [PluginCustomCommandSender] 以 [ConsoleCommandSender] 的身份执行命令
+ *
+ * @see PermitteeId
+ * @see AbstractPluginCustomCommandSender
+ */
+public interface PluginCustomCommandSender : CommandSender, SystemCommandSender {
+    override val isAnsiSupported: Boolean get() = false
+    override val permitteeId: PermitteeId get() = AbstractPermitteeId.Console
+    public val owner: Plugin
+
+    override suspend fun sendMessage(message: Message): Nothing? {
+        return sendMessage(message.toString())
+    }
+
+    override suspend fun sendMessage(message: String): Nothing?
+}
+
+/**
+ * 控制台指令执行者. 代表由控制台执行指令
+ *
+ * 控制台拥有一切指令的执行权限.
+ *
+ * 不建议在 [CompositeCommand] 中使用 [ConsoleCommandSender],
+ * 使用 [SystemCommandSender] 以允许其他插件执行
+ *
+ */
+public object ConsoleCommandSender : AbstractCommandSender(), SystemCommandSender {
+    public const val NAME: String = "ConsoleCommandSender"
+
+    public override val bot: Nothing? get() = null
+    public override val subject: Nothing? get() = null
+    public override val user: Nothing? get() = null
+    public override val name: String get() = NAME
+    public override fun toString(): String = NAME
+
+    public override val permitteeId: AbstractPermitteeId.Console = AbstractPermitteeId.Console
+
+    public override val coroutineContext: CoroutineContext by lazy { MiraiConsole.childScopeContext(NAME) }
+
+    @OptIn(ConsoleFrontEndImplementation::class)
+    override val isAnsiSupported: Boolean
+        get() = MiraiConsoleImplementation.getInstance().isAnsiSupported
+
+    @OptIn(ConsoleFrontEndImplementation::class)
+    @JvmBlockingBridge
+    public override suspend fun sendMessage(message: Message): Nothing? {
+        MiraiConsoleImplementation.getInstance().consoleCommandSender.sendMessage(message)
+        return null
+    }
+
+    @OptIn(ConsoleFrontEndImplementation::class)
+    @JvmBlockingBridge
+    public override suspend fun sendMessage(message: String): Nothing? {
+        MiraiConsoleImplementation.getInstance().consoleCommandSender.sendMessage(message)
+        return null
+    }
+}
+
+/**
+ * 知道 [Group] 环境的 [UserCommandSender]
+ *
+ * 可能的子类:
+ *
+ * - [MemberCommandSender] 代表一个 [群员][Member] 执行指令
+ * - [TempCommandSender] 代表一个 [群员][Member] 通过临时会话执行指令
+ */
+public interface GroupAwareCommandSender : UserCommandSender {
+    public val group: Group
+}
+
+/**
+ * 代表一个用户执行指令
+ *
+ * @see MemberCommandSender 代表一个 [群员][Member] 执行指令
+ * @see FriendCommandSender 代表一个 [好友][Friend] 执行指令
+ * @see TempCommandSender 代表一个 [群员][Member] 通过临时会话执行指令
+ * @see StrangerCommandSender 代表一个 [陌生人][Stranger] 执行指令
+ *
+ * @see CommandSenderOnMessage
+ */
+public interface UserCommandSender : CommandSender {
+    /**
+     * @see MessageEvent.sender
+     */
+    public override val user: User // override nullability
+
+    /**
+     * @see MessageEvent.subject
+     */
+    public override val subject: Contact // override nullability
+    public override val bot: Bot // override nullability
+}
+
+/**
+ * 代表一个真实 [用户][User] 主动私聊机器人或在群内发送消息而执行指令
+ *
+ * @see MemberCommandSenderOnMessage 代表一个真实的 [群员][Member] 主动在群内发送消息执行指令.
+ * @see FriendCommandSenderOnMessage 代表一个真实的 [好友][Friend] 主动在私聊消息执行指令
+ * @see TempCommandSenderOnMessage 代表一个 [群员][Member] 主动在临时会话发送消息执行指令
+ */
+public interface CommandSenderOnMessage<T : MessageEvent> : CommandSender {
+
+    /**
+     * 消息源 [MessageEvent]
+     */
+    public val fromEvent: T
+}
+
+/**
  * 所有 [CommandSender] 都必须继承自此对象.
  * @see CommandSender 查看更多信息
  */
@@ -313,6 +470,9 @@ public sealed class AbstractCommandSender : CommandSender, CoroutineScope {
     public abstract override val user: User?
     public abstract override fun toString(): String
 }
+// endregion
+
+// region extension functions
 
 /**
  * 当 [this] 为 [ConsoleCommandSender] 时返回 `true`
@@ -322,6 +482,16 @@ public fun CommandSender.isConsole(): Boolean {
         returns(true) implies (this@isConsole is ConsoleCommandSender)
     }
     return this is ConsoleCommandSender
+}
+
+/**
+ * 当 [this] 为 [SystemCommandSender] 时返回 `true`
+ */
+public fun CommandSender.isSystem(): Boolean {
+    contract {
+        returns(true) implies (this@isSystem is SystemCommandSender)
+    }
+    return this is SystemCommandSender
 }
 
 /**
@@ -345,19 +515,19 @@ public fun CommandSender.isUser(): Boolean {
 }
 
 /**
- * 当 [this] 不为 [UserCommandSender], 即为 [ConsoleCommandSender] 时返回 `true`
+ * 当 [this] 不为 [UserCommandSender], 即为 [SystemCommandSender] 时返回 `true`
  */
 public fun CommandSender.isNotUser(): Boolean {
     contract {
-        returns(true) implies (this@isNotUser is ConsoleCommandSender)
+        returns(true) implies (this@isNotUser is SystemCommandSender)
     }
     return this !is UserCommandSender
 }
 
 /**
- * 折叠 [AbstractCommandSender] 的可能性.
+ * 折叠 [CommandSender] 的可能性.
  *
- * - 当 [this] 为 [ConsoleCommandSender] 时执行 [ifIsConsole]
+ * - 当 [this] 为 [SystemCommandSender] 时执行 [ifIsSystem]
  * - 当 [this] 为 [UserCommandSender] 时执行 [ifIsUser]
  * - 否则执行 [otherwise]
  *
@@ -367,7 +537,7 @@ public fun CommandSender.isNotUser(): Boolean {
  * val exception: Exception = ...
  *
  * sender.fold(
- *     ifIsConsole = { // this: ConsoleCommandSender
+ *     ifIsSystem = { // this: SystemCommandSender
  *         sendMessage(exception.stackTraceToString()) // 展示整个 stacktrace
  *     },
  *     ifIsUser = { // this: UserCommandSender
@@ -376,28 +546,28 @@ public fun CommandSender.isNotUser(): Boolean {
  * )
  * ```
  *
- * @return [ifIsConsole], [ifIsUser] 或 [otherwise] 执行结果.
+ * @return [ifIsSystem], [ifIsUser] 或 [otherwise] 执行结果.
  */
 @JvmSynthetic
 public inline fun <R> CommandSender.fold(
-    ifIsConsole: ConsoleCommandSender.() -> R,
+    ifIsSystem: SystemCommandSender.() -> R,
     ifIsUser: UserCommandSender.() -> R,
     otherwise: CommandSender.() -> R = { error("CommandSender ${this::class.qualifiedName} is not supported") },
 ): R {
     contract {
-        callsInPlace(ifIsConsole, InvocationKind.AT_MOST_ONCE)
+        callsInPlace(ifIsSystem, InvocationKind.AT_MOST_ONCE)
         callsInPlace(ifIsUser, InvocationKind.AT_MOST_ONCE)
         callsInPlace(otherwise, InvocationKind.AT_MOST_ONCE)
     }
     return when (val sender = this) {
-        is ConsoleCommandSender -> ifIsConsole(sender)
+        is SystemCommandSender -> ifIsSystem(sender)
         is UserCommandSender -> ifIsUser(sender)
         else -> otherwise(sender)
     }
 }
 
 /**
- * 折叠 [AbstractCommandSender] 的两种可能性, 即在群内发送或在私聊环境发送.
+ * 折叠 [UserCommandSender] 的两种可能性, 即在群内发送或在私聊环境发送.
  *
  * - 当 [this] 为 [MemberCommandSender] 时执行 [inGroup]
  * - 当 [this] 为 [TempCommandSender] 或 [FriendCommandSender] 时执行 [inPrivate]
@@ -425,64 +595,21 @@ public inline fun <R> UserCommandSender.foldContext(
 }
 
 /**
- * 尝试获取 [Group].
+ * 尝试获取 [Bot].
  *
- * 当 [GroupAwareCommandSender] 时返回 [GroupAwareCommandSender.group], 否则返回 `null`
+ * 当 [UserCommandSender] 时返回 [UserCommandSender.bot], 否则返回 `null`
  *
  * ### 契约
  * 本函数定义契约,
- * - 若返回非 `null` 实例, Kotlin 编译器认为 [this] 是 [GroupAwareCommandSender] 实例并执行智能类型转换.
- * - 若返回 `null`, Kotlin 编译器认为 [this] 是 [FriendCommandSender] 实例并执行智能类型转换.
+ * - 若返回非 `null` 实例, Kotlin 编译器认为 [this] 是 [UserCommandSender] 实例并执行智能类型转换.
+ * - 若返回 `null`, Kotlin 编译器认为 [this] 是 [SystemCommandSender] 实例并执行智能类型转换.
  */
 public fun CommandSender.getBotOrNull(): Bot? {
     contract {
-        returns(null) implies (this@getBotOrNull is AbstractUserCommandSender)
-        returnsNotNull() implies (this@getBotOrNull is ConsoleCommandSender)
+        returns(null) implies (this@getBotOrNull is SystemCommandSender)
+        returnsNotNull() implies (this@getBotOrNull is UserCommandSender)
     }
     return this.castOrNull<UserCommandSender>()?.bot
-}
-
-/**
- * 控制台指令执行者. 代表由控制台执行指令
- *
- * 控制台拥有一切指令的执行权限.
- */
-public object ConsoleCommandSender : AbstractCommandSender() {
-    public const val NAME: String = "ConsoleCommandSender"
-
-    public override val bot: Nothing? get() = null
-    public override val subject: Nothing? get() = null
-    public override val user: Nothing? get() = null
-    public override val name: String get() = NAME
-    public override fun toString(): String = NAME
-
-    public override val permitteeId: AbstractPermitteeId.Console = AbstractPermitteeId.Console
-
-    public override val coroutineContext: CoroutineContext by lazy { MiraiConsole.childScopeContext(NAME) }
-
-    @JvmBlockingBridge
-    public override suspend fun sendMessage(message: Message): Nothing? {
-        MiraiConsoleImplementation.getInstance().consoleCommandSender.sendMessage(message)
-        return null
-    }
-
-    @JvmBlockingBridge
-    public override suspend fun sendMessage(message: String): Nothing? {
-        MiraiConsoleImplementation.getInstance().consoleCommandSender.sendMessage(message)
-        return null
-    }
-}
-
-/**
- * 知道 [Group] 环境的 [UserCommandSender]
- *
- * 可能的子类:
- *
- * - [MemberCommandSender] 代表一个 [群员][Member] 执行指令
- * - [TempCommandSender] 代表一个 [群员][Member] 通过临时会话执行指令
- */
-public interface GroupAwareCommandSender : UserCommandSender {
-    public val group: Group
 }
 
 /**
@@ -503,32 +630,13 @@ public fun CommandSender.getGroupOrNull(): Group? {
     return this.castOrNull<GroupAwareCommandSender>()?.group
 }
 
+// endregion
+
+// region implementations
+
 ///////////////////////////////////////////////////////////////////////////
 // UserCommandSender
 ///////////////////////////////////////////////////////////////////////////
-
-/**
- * 代表一个用户执行指令
- *
- * @see MemberCommandSender 代表一个 [群员][Member] 执行指令
- * @see FriendCommandSender 代表一个 [好友][Friend] 执行指令
- * @see TempCommandSender 代表一个 [群员][Member] 通过临时会话执行指令
- * @see StrangerCommandSender 代表一个 [陌生人][Stranger] 执行指令
- *
- * @see CommandSenderOnMessage
- */
-public interface UserCommandSender : CommandSender {
-    /**
-     * @see MessageEvent.sender
-     */
-    public override val user: User // override nullability
-
-    /**
-     * @see MessageEvent.subject
-     */
-    public override val subject: Contact // override nullability
-    public override val bot: Bot // override nullability
-}
 
 /**
  * [UserCommandSender] 的实现
@@ -667,21 +775,6 @@ public open class OtherClientCommandSender internal constructor(
 ///////////////////////////////////////////////////////////////////////////
 
 /**
- * 代表一个真实 [用户][User] 主动私聊机器人或在群内发送消息而执行指令
- *
- * @see MemberCommandSenderOnMessage 代表一个真实的 [群员][Member] 主动在群内发送消息执行指令.
- * @see FriendCommandSenderOnMessage 代表一个真实的 [好友][Friend] 主动在私聊消息执行指令
- * @see TempCommandSenderOnMessage 代表一个 [群员][Member] 主动在临时会话发送消息执行指令
- */
-public interface CommandSenderOnMessage<T : MessageEvent> : CommandSender {
-
-    /**
-     * 消息源 [MessageEvent]
-     */
-    public val fromEvent: T
-}
-
-/**
  * 代表一个真实的 [好友][Friend] 主动在私聊消息执行指令
  * @see FriendCommandSender 代表一个 [好友][Friend] 执行指令, 但不一定是通过私聊方式
  */
@@ -737,3 +830,66 @@ public class StrangerCommandSenderOnMessage internal constructor(
 public class OtherClientCommandSenderOnMessage internal constructor(
     public override val fromEvent: OtherClientMessageEvent,
 ) : OtherClientCommandSender(fromEvent.client), CommandSenderOnMessage<OtherClientMessageEvent>
+
+/**
+ * 代表一个 [其他客户端][OtherClient] 主动在群内、好友聊天等发送消息执行指令
+ * @see OtherClientCommandSender 代表一个 [其他客户端][OtherClient] 执行指令, 但不一定是通过私聊方式
+ * @since 2.13
+ */
+public class OtherClientCommandSenderOnMessageSync internal constructor(
+    public override val fromEvent: MessageSyncEvent,
+) : OtherClientCommandSender(fromEvent.client), CommandSenderOnMessage<MessageSyncEvent>
+
+// endregion
+
+// region PluginCustomCommandSender implementations
+/**
+ * 所有 [PluginCustomCommandSender] 的父类
+ *
+ * Java 见 [AbstractPluginCustomCommandSenderJ]
+ */
+public abstract class AbstractPluginCustomCommandSender(
+    final override val owner: Plugin,
+) : AbstractCommandSender(), PluginCustomCommandSender {
+    override val coroutineContext: CoroutineContext by lazy {
+        if (owner is CoroutineScope) {
+            return@lazy owner.childScopeContext(name)
+        }
+        // Fallback
+        return@lazy MiraiConsole.childScopeContext("PluginCustomCommandSender-$name")
+    }
+    override val name: String get() = owner.name
+    override fun toString(): String = name
+
+    override val isAnsiSupported: Boolean get() = false
+    override val permitteeId: PermitteeId get() = AbstractPermitteeId.Console
+
+    override val bot: Bot? get() = null
+    override val subject: Contact? get() = null
+    override val user: User? get() = null
+
+    override suspend fun sendMessage(message: String): Nothing? {
+        sendMessage0(message)
+        return null
+    }
+
+    protected abstract suspend fun sendMessage0(message: String)
+}
+
+@JavaFriendlyApi
+public abstract class AbstractPluginCustomCommandSenderJ(
+    owner: Plugin
+) : AbstractPluginCustomCommandSender(owner) {
+    protected abstract fun sendMessageImpl(message: String)
+
+    final override suspend fun sendMessage(message: String): Nothing? {
+        sendMessageImpl(message)
+        return null
+    }
+
+    final override suspend fun sendMessage0(message: String) {
+        sendMessageImpl(message)
+    }
+}
+// endregion
+

@@ -7,14 +7,13 @@
  * https://github.com/mamoe/mirai/blob/master/LICENSE
  */
 
-@file:JvmMultifileClass
-@file:JvmName("MiraiUtils")
+@file:JvmName("StandardUtilsKt_common")
 
 package net.mamoe.mirai.utils
 
-import java.util.*
 import kotlin.contracts.InvocationKind
 import kotlin.contracts.contract
+import kotlin.jvm.JvmName
 
 public inline fun <reified T> Any?.cast(): T {
     contract { returns() implies (this@cast is T) }
@@ -58,34 +57,6 @@ public inline fun <E> MutableList<E>.replaceAllKotlin(operator: (E) -> E) {
     }
 }
 
-public fun <T> Collection<T>.asImmutable(): Collection<T> {
-    return when (this) {
-        is List<T> -> asImmutable()
-        is Set<T> -> asImmutable()
-        else -> Collections.unmodifiableCollection(this)
-    }
-}
-
-@Suppress("NOTHING_TO_INLINE")
-public inline fun <T> Collection<T>.asImmutableStrict(): Collection<T> {
-    return Collections.unmodifiableCollection(this)
-}
-
-@Suppress("NOTHING_TO_INLINE")
-public inline fun <T> List<T>.asImmutable(): List<T> {
-    return Collections.unmodifiableList(this)
-}
-
-@Suppress("NOTHING_TO_INLINE")
-public inline fun <T> Set<T>.asImmutable(): Set<T> {
-    return Collections.unmodifiableSet(this)
-}
-
-@Suppress("NOTHING_TO_INLINE")
-public inline fun <K, V> Map<K, V>.asImmutable(): Map<K, V> {
-    return Collections.unmodifiableMap(this)
-}
-
 public fun Throwable.getRootCause(maxDepth: Int = 20): Throwable {
     var depth = 0
     var rootCause: Throwable? = this
@@ -112,12 +83,15 @@ public fun Throwable.causes(maxDepth: Int = 20): Sequence<Throwable> = sequence 
 
 public inline fun Throwable.findCause(maxDepth: Int = 20, filter: (Throwable) -> Boolean): Throwable? {
     var depth = 0
-    var rootCause: Throwable? = this
+    var curr: Throwable? = this
     while (true) {
-        if (rootCause?.cause === rootCause) return rootCause
-        val current = rootCause?.cause ?: return null
-        if (filter(current)) return current
-        rootCause = rootCause.cause
+        if (curr == null) return null
+        val cause = curr.cause ?: return null
+        if (filter(cause)) return cause
+
+        if (curr.cause === curr) return null // circular reference
+        curr = curr.cause
+
         if (depth++ >= maxDepth) return null
     }
 }
@@ -156,7 +130,7 @@ public inline fun Throwable.findCauseOrSelf(maxDepth: Int = 20, filter: (Throwab
     findCause(maxDepth, filter) ?: this
 
 public fun String.capitalize(): String {
-    return replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+    return replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
 }
 
 public fun String.truncated(length: Int, truncated: String = "..."): String {
@@ -178,3 +152,29 @@ public inline fun <T> T.context(block: T.() -> Unit) {
 
 public fun assertUnreachable(hint: String? = null): Nothing =
     error("This clause should not be reached. " + hint.orEmpty())
+
+public fun isSameClass(object1: Any?, object2: Any?): Boolean {
+    if (object1 == null || object2 == null) {
+        return object1 == null && object2 == null
+    }
+    return isSameClassPlatform(object1, object2)
+}
+
+internal expect fun isSameClassPlatform(object1: Any, object2: Any): Boolean
+
+public inline fun <reified T> isSameType(thisObject: T, other: Any?): Boolean {
+    contract {
+        returns(true) implies (other is T)
+    }
+    if (other == null) return false
+    if (other !is T) return false
+    return isSameClass(thisObject, other)
+}
+
+public expect fun availableProcessors(): Int
+
+
+/**
+ * Localhost 解析
+ */
+public expect fun localIpAddress(): String

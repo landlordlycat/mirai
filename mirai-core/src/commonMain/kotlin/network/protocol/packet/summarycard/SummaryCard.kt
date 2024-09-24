@@ -1,16 +1,15 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2022 Mamoe Technologies and contributors.
  *
- *  此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
- *  Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
  *
- *  https://github.com/mamoe/mirai/blob/master/LICENSE
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
 package net.mamoe.mirai.internal.network.protocol.packet.summarycard
 
-import kotlinx.io.core.ByteReadPacket
-import kotlinx.io.core.discardExact
+import io.ktor.utils.io.core.*
 import net.mamoe.mirai.data.UserProfile
 import net.mamoe.mirai.internal.QQAndroidBot
 import net.mamoe.mirai.internal.network.Packet
@@ -36,9 +35,10 @@ internal data class UserProfileImpl(
     override val qLevel: Int,
     override val sex: UserProfile.Sex,
     override val sign: String,
+    override val friendGroupId: Int,
 ) : Packet, UserProfile {
     override fun toString(): String {
-        return "UserProfile(nickname=$nickname, email=$email, age=$age, qLevel=$qLevel, sex=$sex, sign=$sign)"
+        return "UserProfile(nickname=$nickname, email=$email, age=$age, qLevel=$qLevel, sex=$sex, sign=$sign, friendGroupId=$friendGroupId)"
     }
 }
 
@@ -119,7 +119,8 @@ internal object SummaryCard {
                     1 -> UserProfile.Sex.FEMALE
                     else -> UserProfile.Sex.UNKNOWN
                 },
-                sign = sign
+                sign = sign,
+                friendGroupId = response.uFriendGroupId?.toInt() ?: 0
             )
         }
     }

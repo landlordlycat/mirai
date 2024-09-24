@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -7,15 +7,20 @@
  * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
-@file:OptIn(ConsoleExperimentalApi::class)
+@file:OptIn(
+    ConsoleExperimentalApi::class, ConsoleFrontEndImplementation::class, ConsoleInternalApi::class,
+    MiraiInternalApi::class, MiraiExperimentalApi::class
+)
 
 package net.mamoe.mirai.console.internal
 
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.him188.kotlin.dynamic.delegation.dynamicDelegation
 import net.mamoe.mirai.Bot
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
 import net.mamoe.mirai.console.MalformedMiraiConsoleImplementationError
 import net.mamoe.mirai.console.MiraiConsole
 import net.mamoe.mirai.console.MiraiConsoleImplementation
@@ -26,24 +31,30 @@ import net.mamoe.mirai.console.command.ConsoleCommandSender
 import net.mamoe.mirai.console.command.descriptor.ExperimentalCommandDescriptors
 import net.mamoe.mirai.console.command.parse.SpaceSeparatedCommandCallParser
 import net.mamoe.mirai.console.command.resolve.BuiltInCommandCallResolver
+import net.mamoe.mirai.console.events.AutoLoginEvent
+import net.mamoe.mirai.console.events.StartupEvent
 import net.mamoe.mirai.console.extensions.CommandCallParserProvider
 import net.mamoe.mirai.console.extensions.CommandCallResolverProvider
 import net.mamoe.mirai.console.extensions.PermissionServiceProvider
 import net.mamoe.mirai.console.extensions.PostStartupExtension
+import net.mamoe.mirai.console.internal.auth.ConsoleSecretsCalculator
 import net.mamoe.mirai.console.internal.command.CommandConfig
 import net.mamoe.mirai.console.internal.data.builtins.AutoLoginConfig
 import net.mamoe.mirai.console.internal.data.builtins.AutoLoginConfig.Account.ConfigurationKey
 import net.mamoe.mirai.console.internal.data.builtins.AutoLoginConfig.Account.PasswordKind.MD5
 import net.mamoe.mirai.console.internal.data.builtins.AutoLoginConfig.Account.PasswordKind.PLAIN
 import net.mamoe.mirai.console.internal.data.builtins.DataScope
+import net.mamoe.mirai.console.internal.data.builtins.LoggerConfig
 import net.mamoe.mirai.console.internal.data.builtins.PluginDependenciesConfig
+import net.mamoe.mirai.console.internal.enduserreadme.EndUserReadmeProcessor
 import net.mamoe.mirai.console.internal.extension.GlobalComponentStorage
 import net.mamoe.mirai.console.internal.extension.GlobalComponentStorageImpl
 import net.mamoe.mirai.console.internal.logging.LoggerControllerImpl
 import net.mamoe.mirai.console.internal.logging.MiraiConsoleLogger
+import net.mamoe.mirai.console.internal.logging.externalbind.slf4j.MiraiConsoleSLF4JAdapter
 import net.mamoe.mirai.console.internal.permission.BuiltInPermissionService
 import net.mamoe.mirai.console.internal.plugin.PluginManagerImpl
-import net.mamoe.mirai.console.internal.util.autoHexToBytes
+import net.mamoe.mirai.console.internal.shutdown.ShutdownDaemon
 import net.mamoe.mirai.console.internal.util.runIgnoreException
 import net.mamoe.mirai.console.logging.LoggerController
 import net.mamoe.mirai.console.permission.PermissionService
@@ -51,16 +62,16 @@ import net.mamoe.mirai.console.permission.PermissionService.Companion.permit
 import net.mamoe.mirai.console.permission.RootPermission
 import net.mamoe.mirai.console.plugin.PluginManager
 import net.mamoe.mirai.console.plugin.name
-import net.mamoe.mirai.console.util.ConsoleExperimentalApi
-import net.mamoe.mirai.console.util.ConsoleInput
-import net.mamoe.mirai.console.util.SemVersion
+import net.mamoe.mirai.console.util.*
 import net.mamoe.mirai.console.util.cast
+import net.mamoe.mirai.event.broadcast
 import net.mamoe.mirai.utils.*
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.contracts.InvocationKind
 import kotlin.contracts.contract
+import kotlin.reflect.KClass
 import kotlin.reflect.KProperty
 import kotlin.reflect.KProperty0
 
@@ -86,10 +97,14 @@ internal class MiraiConsoleImplementationBridge(
 
     // used internally
     val globalComponentStorage: GlobalComponentStorageImpl by lazy { GlobalComponentStorageImpl() }
+    val shutdownDaemon = ShutdownDaemon.DaemonStarter(this)
 
     // tentative workaround for https://github.com/mamoe/mirai/pull/1889#pullrequestreview-887903183
     @Volatile
     var permissionSeviceLoaded: Boolean = false
+
+    // For protect account.secrets in console with non-password login
+    lateinit var consoleSecretsCalculator: ConsoleSecretsCalculator
 
     // MiraiConsoleImplementation define: get() = LoggerControllerImpl()
     // Need to cache it or else created every call.
@@ -98,25 +113,69 @@ internal class MiraiConsoleImplementationBridge(
         externalImplementation.loggerController
     }
 
-    override val mainLogger: MiraiLogger by lazy { createLogger("main") }
+    override val mainLogger: MiraiLogger by lazy { MiraiLogger.Factory.create(MiraiConsole::class, "main") }
 
-    init {
-        // TODO: Replace to standard api
-        @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
-        DefaultFactoryOverrides.override { requester, identity ->
-            return@override createLogger(
-                identity ?: requester.kotlin.simpleName ?: requester.simpleName
-            )
+    /**
+     * Delegates the [platformImplementation] with [loggerController].
+     */
+    private inner class ControlledLoggerFactory(
+        private val platformImplementation: MiraiLogger.Factory,
+    ) : MiraiLogger.Factory {
+        override fun create(requester: KClass<*>, identity: String?): MiraiLogger {
+            return MiraiConsoleLogger(loggerController, platformImplementation.create(requester, identity))
+        }
+
+        override fun create(requester: Class<*>, identity: String?): MiraiLogger {
+            return MiraiConsoleLogger(loggerController, platformImplementation.create(requester, identity))
         }
     }
 
-
-    override fun createLogger(identity: String?): MiraiLogger {
-        val controller = loggerController
-        return MiraiConsoleLogger(controller, externalImplementation.createLogger(identity))
+    override fun createLoggerFactory(context: MiraiConsoleImplementation.FrontendLoggingInitContext): MiraiLogger.Factory {
+        error("Duplicated logger factory initalization is not allowed. Use MiraiLogger.Factory instead.")
     }
 
-    @Suppress("RemoveRedundantBackticks")
+    init {
+        // When writing a log:
+        // 1. ControlledLoggerFactory checks if that log level is enabled
+        // 2. ... if enabled, goto 3
+        //    ... if not, return
+        // 3. [externalImplementation] decides how to log the message
+        // 4. [externalImplementation] outputs by using [platform]
+        val context = object : MiraiConsoleImplementation.FrontendLoggingInitContext {
+            val pendingActions = mutableListOf<() -> Unit>()
+            override fun acquirePlatformImplementation(): MiraiLogger.Factory {
+                @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+                return MiraiLoggerFactoryImplementationBridge.instance
+            }
+
+            override fun invokeAfterInitialization(action: () -> Unit) {
+                pendingActions.add(action)
+            }
+        }
+
+        val response = externalImplementation.createLoggerFactory(context)
+        @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+        MiraiLoggerFactoryImplementationBridge.setInstance(ControlledLoggerFactory(response))
+
+        @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+        MiraiLoggerFactoryImplementationBridge.freeze() // forbid any further overrides
+
+        context.pendingActions.forEach { it.invoke() }
+    }
+
+
+    @Deprecated(
+        "Please use the standard way in mirai-core to create loggers, i.e. MiraiLogger.Factory.INSTANCE.create()",
+        replaceWith = ReplaceWith(
+            "MiraiLogger.Factory.create(yourClass::class, identity)",
+            "net.mamoe.mirai.utils.MiraiLogger"
+        ),
+        level = DeprecationLevel.ERROR
+    )
+    override fun createLogger(identity: String?): MiraiLogger {
+        return MiraiLogger.Factory.create(MiraiConsole::class, identity)
+    }
+
     internal fun doStart() {
         externalImplementation.preStart()
 
@@ -134,6 +193,61 @@ internal class MiraiConsoleImplementationBridge(
                 buildDate.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
 
             mainLogger.info { "Starting mirai-console..." }
+
+            val printLogo = true // TODO
+            if (printLogo) {
+                mainLogger.info {
+                    AnsiMessageBuilder.create(noAnsi = !isAnsiSupported).apply {
+                        /*
+
+___  ____           _   _____                       _
+|  \/  (_)         (_) /  __ \                     | |
+| .  . |_ _ __ __ _ _  | /  \/ ___  _ __  ___  ___ | | ___
+| |\/| | | '__/ _` | | | |    / _ \| '_ \/ __|/ _ \| |/ _ \
+| |  | | | | | (_| | | | \__/\ (_) | | | \__ \ (_) | |  __/
+\_|  |_/_|_|  \__,_|_|  \____/\___/|_| |_|___/\___/|_|\___|
+
+ __       __ __                   __  ______                                      __
+|  \     /  \  \                 |  \/      \                                    |  \
+| ▓▓\   /  ▓▓\▓▓ ______   ______  \▓▓  ▓▓▓▓▓▓\ ______  _______   _______  ______ | ▓▓ ______
+| ▓▓▓\ /  ▓▓▓  \/      \ |      \|  \ ▓▓   \▓▓/      \|       \ /       \/      \| ▓▓/      \
+| ▓▓▓▓\  ▓▓▓▓ ▓▓  ▓▓▓▓▓▓\ \▓▓▓▓▓▓\ ▓▓ ▓▓     |  ▓▓▓▓▓▓\ ▓▓▓▓▓▓▓\  ▓▓▓▓▓▓▓  ▓▓▓▓▓▓\ ▓▓  ▓▓▓▓▓▓\
+| ▓▓\▓▓ ▓▓ ▓▓ ▓▓ ▓▓   \▓▓/      ▓▓ ▓▓ ▓▓   __| ▓▓  | ▓▓ ▓▓  | ▓▓\▓▓    \| ▓▓  | ▓▓ ▓▓ ▓▓    ▓▓
+| ▓▓ \▓▓▓| ▓▓ ▓▓ ▓▓     |  ▓▓▓▓▓▓▓ ▓▓ ▓▓__/  \ ▓▓__/ ▓▓ ▓▓  | ▓▓_\▓▓▓▓▓▓\ ▓▓__/ ▓▓ ▓▓ ▓▓▓▓▓▓▓▓
+| ▓▓  \▓ | ▓▓ ▓▓ ▓▓      \▓▓    ▓▓ ▓▓\▓▓    ▓▓\▓▓    ▓▓ ▓▓  | ▓▓       ▓▓\▓▓    ▓▓ ▓▓\▓▓     \
+ \▓▓      \▓▓\▓▓\▓▓       \▓▓▓▓▓▓▓\▓▓ \▓▓▓▓▓▓  \▓▓▓▓▓▓ \▓▓   \▓▓\▓▓▓▓▓▓▓  \▓▓▓▓▓▓ \▓▓ \▓▓▓▓▓▓▓
+
+                        */
+                        append("\n\n")
+
+                        val textA = """[ Mirai console $version ]"""
+                        val logoLength = 94
+                        lightBlue()
+                        val barlength = logoLength - textA.length
+                        val leftWidth = barlength / 2
+                        repeat(leftWidth) {
+                            append('=')
+                        }
+                        append(textA)
+                        repeat(barlength - leftWidth) {
+                            append('=')
+                        }
+                        append('\n')
+
+                        lightYellow().appendLine(""" __       __ __                   __  ______                                      __""")
+                        lightYellow().appendLine("""|  \     /  \  \                 |  \/      \                                    |  \""")
+                        lightYellow().appendLine("""| ▓▓\   /  ▓▓\▓▓ ______   ______  \▓▓  ▓▓▓▓▓▓\ ______  _______   _______  ______ | ▓▓ ______""")
+                        lightYellow().appendLine("""| ▓▓▓\ /  ▓▓▓  \/      \ |      \|  \ ▓▓   \▓▓/      \|       \ /       \/      \| ▓▓/      \""")
+                        lightYellow().appendLine("""| ▓▓▓▓\  ▓▓▓▓ ▓▓  ▓▓▓▓▓▓\ \▓▓▓▓▓▓\ ▓▓ ▓▓     |  ▓▓▓▓▓▓\ ▓▓▓▓▓▓▓\  ▓▓▓▓▓▓▓  ▓▓▓▓▓▓\ ▓▓  ▓▓▓▓▓▓\""")
+                        lightYellow().appendLine("""| ▓▓\▓▓ ▓▓ ▓▓ ▓▓ ▓▓   \▓▓/      ▓▓ ▓▓ ▓▓   __| ▓▓  | ▓▓ ▓▓  | ▓▓\▓▓    \| ▓▓  | ▓▓ ▓▓ ▓▓    ▓▓""")
+                        lightYellow().appendLine("""| ▓▓ \▓▓▓| ▓▓ ▓▓ ▓▓     |  ▓▓▓▓▓▓▓ ▓▓ ▓▓__/  \ ▓▓__/ ▓▓ ▓▓  | ▓▓_\▓▓▓▓▓▓\ ▓▓__/ ▓▓ ▓▓ ▓▓▓▓▓▓▓▓""")
+                        lightYellow().appendLine("""| ▓▓  \▓ | ▓▓ ▓▓ ▓▓      \▓▓    ▓▓ ▓▓\▓▓    ▓▓\▓▓    ▓▓ ▓▓  | ▓▓       ▓▓\▓▓    ▓▓ ▓▓\▓▓     \""")
+                        lightYellow().appendLine(""" \▓▓      \▓▓\▓▓\▓▓       \▓▓▓▓▓▓▓\▓▓ \▓▓▓▓▓▓  \▓▓▓▓▓▓ \▓▓   \▓▓\▓▓▓▓▓▓▓  \▓▓▓▓▓▓ \▓▓ \▓▓▓▓▓▓▓""")
+                        append("\n")
+                    }.toString()
+                }
+            }
+
             mainLogger.info { "Backend: version $version, built on $buildDateFormatted." }
             mainLogger.info { frontEndDescription.render() }
             mainLogger.info { "Welcome to visit https://mirai.mamoe.net/" }
@@ -148,6 +262,7 @@ internal class MiraiConsoleImplementationBridge(
             }
 
             MiraiConsole.job.invokeOnCompletion {
+                shutdownDaemon.tryStart()
                 Bot.instances.forEach { kotlin.runCatching { it.close() }.exceptionOrNull()?.let(mainLogger::error) }
             }
         }
@@ -164,12 +279,25 @@ internal class MiraiConsoleImplementationBridge(
             val loggerController = loggerController
             if (loggerController is LoggerControllerImpl) {
                 consoleDataScope.addAndReloadConfig(loggerController.loggerConfig)
+            } else {
+                consoleDataScope.addAndReloadConfig(LoggerConfig())
             }
             consoleDataScope.reloadAll()
+            if (loggerController is LoggerControllerImpl) {
+                loggerController.onReload()
+            }
+        }
+
+        phase("initialize logging bridges") {
+            MiraiConsoleSLF4JAdapter.doSlf4JInit()
         }
 
         phase("initialize all plugins") {
             pluginManager // init
+
+            consoleSecretsCalculator = ConsoleSecretsCalculator(
+                pluginManager.pluginsDataPath.resolve("Console/console-secrets.key")
+            ).also { it.consoleKey }
 
             mainLogger.verbose { "Loading JVM plugins..." }
             pluginManager.loadAllPluginsUsingBuiltInLoaders()
@@ -235,7 +363,11 @@ internal class MiraiConsoleImplementationBridge(
                 registeredCommand.permission // init
             }
 
-            mainLogger.info { "${pluginManager.plugins.size} plugin(s) enabled." }
+            mainLogger.info { "${pluginManager.plugins.count { it.isEnabled }} plugin(s) enabled." }
+        }
+
+        phase("end-user-readme") {
+            EndUserReadmeProcessor.process(this)
         }
 
         phase("auto-login bots") {
@@ -252,7 +384,6 @@ internal class MiraiConsoleImplementationBridge(
                     }
                     if (id == 123456L) continue
                     fun BotConfiguration.configBot() {
-                        mainLogger.info { "Auto-login ${account.account}" }
 
                         account.configuration[ConfigurationKey.protocol]?.let { protocol ->
                             this.protocol = runCatching {
@@ -277,15 +408,18 @@ internal class MiraiConsoleImplementationBridge(
                         account.configuration[ConfigurationKey.device]?.let { device ->
                             fileBasedDeviceInfo(device.toString())
                         }
+
+                        mainLogger.info { "Auto-login ${account.account}, protocol: ${this.protocol}, heartbeatStrategy: ${this.heartbeatStrategy}" }
                     }
 
                     val bot = when (account.password.kind) {
                         PLAIN -> {
                             MiraiConsole.addBot(id, account.password.value, BotConfiguration::configBot)
                         }
+
                         MD5 -> {
                             val md5 = kotlin.runCatching {
-                                account.password.value.autoHexToBytes()
+                                account.password.value.hexToBytes()
                             }.getOrElse {
                                 error("Bad auto-login md5: '${account.password.value}' for account $id")
                             }
@@ -293,16 +427,35 @@ internal class MiraiConsoleImplementationBridge(
                         }
                     }
 
-                    runCatching { bot.login() }.getOrElse {
+                    runCatching {
+                        bot.login()
+                    }.onSuccess {
+                        launch {
+                            AutoLoginEvent.Success(bot = bot).broadcast()
+                        }
+                    }.onFailure {
                         mainLogger.error(it)
-                        bot.close()
+
+                        runCatching {
+                            bot.close()
+                        }.onFailure { err ->
+                            mainLogger.error("Error in closing bot", err)
+                        }
+
+                        launch {
+                            AutoLoginEvent.Failure(bot = bot, cause = it).broadcast()
+                        }
                     }
                 }
 
             }
         }
 
+        val startuped = currentTimeSeconds()
         phase("finally post") {
+            launch {
+                StartupEvent(timestamp = startuped).broadcast()
+            }
             globalComponentStorage.useEachExtensions(PostStartupExtension) { it.invoke() }
         }
 
@@ -337,3 +490,4 @@ internal class MiraiConsoleImplementationBridge(
         externalImplementation.postPhase(phase)
     }
 }
+

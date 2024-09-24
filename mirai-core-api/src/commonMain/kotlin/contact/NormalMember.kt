@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2022 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -20,8 +20,8 @@ import net.mamoe.mirai.message.action.Nudge
 import net.mamoe.mirai.message.data.Message
 import net.mamoe.mirai.message.data.isContentEmpty
 import net.mamoe.mirai.message.data.toPlainText
-import net.mamoe.mirai.utils.DeprecatedSinceMirai
 import net.mamoe.mirai.utils.NotStableForInheritance
+import kotlin.jvm.JvmName
 import kotlin.time.Duration
 import kotlin.time.DurationUnit
 import kotlin.time.ExperimentalTime
@@ -56,8 +56,9 @@ public interface NormalMember : Member {
      *
      * 在修改时将会异步上传至服务器.
      *
-     * @see MemberSpecialTitleChangeEvent 群特殊头衔被管理员, 自己或 [Bot] 改动事件. 修改时也会触发此事件.
+     * @see MemberSpecialTitleChangeEvent  成员群特殊头衔改动事件.
      * @throws PermissionDeniedException 无权限修改时
+     * @suppress 请勿试图修改其为空字符串来产生空头衔效果，这将使成员实际佩戴头衔退回为[活跃度相关头衔][Member.active]或管理员头衔.
      */
     public override var specialTitle: String
 

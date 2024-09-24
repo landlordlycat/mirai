@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -48,12 +48,18 @@ public interface PermitteeId {
 
     public companion object {
         /**
-         * 当 [this] 或 [this] 的任意一个直接或间接父 [PermitteeId.asString] 与 `this.asString` 相同时返回 `true`
+         * 当 [this] 或 [this] 的任意一个直接或间接父 [PermitteeId.asString] 与 `parent.asString` 相同时返回 `true`
+         *
+         * @since 2.16
          */
         @JvmStatic
-        public fun PermitteeId.hasChild(child: PermitteeId): Boolean {
-            return allParentsWithSelf.any { it.asString() == child.asString() } // asString is for compatibility issue with external implementations
+        public fun PermitteeId.isChildOf(parent: PermitteeId): Boolean {
+            return allParentsWithSelf.any { it.asString() == parent.asString() } // asString is for compatibility issue with external implementations
         }
+
+        @JvmStatic
+        @DeprecatedSinceMirai(warningSince = "2.16")
+        public fun PermitteeId.hasChild(child: PermitteeId): Boolean = isChildOf(child)
 
         /**
          * 获取所有直接或间接父类的 [PermitteeId].
@@ -166,6 +172,7 @@ public interface PermitteeId {
  *                                                          ExactTemp
  * ```
  */
+@OptIn(ConsoleExperimentalApi::class)
 @Serializable(with = AsStringSerializer::class)
 public sealed class AbstractPermitteeId(
     public final override vararg val directParents: PermitteeId,

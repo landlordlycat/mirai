@@ -1,10 +1,10 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
- *  此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
- *  Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
  *
- *  https://github.com/mamoe/mirai/blob/master/LICENSE
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
 @file:Suppress("unused", "DEPRECATION_ERROR", "EXPOSED_SUPER_CLASS", "MemberVisibilityCanBePrivate")
@@ -20,9 +20,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.BotFactory
+import net.mamoe.mirai.Mirai
+import net.mamoe.mirai.auth.BotAuthorization
 import net.mamoe.mirai.event.events.BotOfflineEvent
-import java.io.File
-import java.io.InputStream
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.coroutineContext
@@ -30,7 +30,9 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * [Bot] 配置. 用于 [BotFactory.newBot]
+ * [Bot] 配置. 用于 [BotFactory.newBot].
+ *
+ * 部分平台相关配置位于 [AbstractBotConfiguration], 例如 `fileBasedDeviceInfo`.
  *
  * Kotlin 使用方法:
  * ```
@@ -52,28 +54,8 @@ import kotlin.time.Duration.Companion.milliseconds
  * }})
  * ```
  */
-@Suppress("PropertyName")
-public open class BotConfiguration { // open for Java
-    /**
-     * 工作目录. 默认为 "."
-     */
-    public var workingDir: File = File(".")
-
-    /**
-     * Json 序列化器, 使用 'kotlinx.serialization'
-     */
-    @MiraiExperimentalApi
-    public var json: Json = kotlin.runCatching {
-        Json {
-            isLenient = true
-            ignoreUnknownKeys = true
-            prettyPrint = true
-        }
-    }.getOrElse {
-        @Suppress("JSON_FORMAT_REDUNDANT_DEFAULT") // compatible for older versions
-        Json {}
-    }
-
+@OptIn(MiraiInternalApi::class)
+public open class BotConfiguration : AbstractBotConfiguration() { // open for Java
     ///////////////////////////////////////////////////////////////////////////
     // Coroutines
     ///////////////////////////////////////////////////////////////////////////
@@ -165,7 +147,7 @@ public open class BotConfiguration { // open for Java
      * 心跳策略.
      * @since 2.6.3
      */
-    public enum class HeartbeatStrategy {
+    public enum class HeartbeatStrategy { // IN ACTUAL DECLARATION DO NOT ADD EXTRA ELEMENTS.
         /**
          * 使用 2.6.0 增加的*状态心跳* (Stat Heartbeat). 通常推荐这个模式.
          *
@@ -246,13 +228,15 @@ public open class BotConfiguration { // open for Java
 
         /**
          * Android 平板.
-         *
-         * 注意: 不支持戳一戳事件解析
          */
         ANDROID_PAD,
 
         /**
          * Android 手表.
+         *
+         * 注意:
+         * - 不支持戳一戳事件解析
+         * - 由于该协议的省电特性, 当群被设置为不提醒的的时候, 服务器不会推送消息.
          */
         ANDROID_WATCH,
 
@@ -269,18 +253,37 @@ public open class BotConfiguration { // open for Java
          * @since 2.8
          */
         MACOS,
+        ;
 
+        /**
+         * 当前协议是否支持[二维码登录][BotAuthorization.byQRCode]
+         *
+         * @since 2.15.0
+         */
+        public val isQRLoginSupported: Boolean get() = data.isQRLoginSupported
+
+        /**
+         * 当前协议是否支持[戳一戳][Bot.nudge]
+         *
+         * @since 2.16.0
+         */
+        public val isNudgeSupported: Boolean get() = data.isNudgeSupported
+
+        private inline val data: InternalProtocolDataExchange.InternalProtocolData
+            get() = InternalProtocolDataExchange.instance.of(
+                this
+            )
     }
 
     /**
      * Highway 通道上传图片, 语音, 文件等资源时的协程数量.
      *
      * 每个协程的速度约为 200KB/s. 协程数量越多越快, 同时也更要求性能.
-     * 默认 [CPU 核心数][Runtime.availableProcessors].
+     * 默认为 CPU 核心数.
      *
      * @since 2.2
      */
-    public var highwayUploadCoroutineCount: Int = Runtime.getRuntime().availableProcessors()
+    public var highwayUploadCoroutineCount: Int = availableProcessors()
 
     /**
      * 设置 [autoReconnectOnForceOffline] 为 `true`, 即在被挤下线时自动重连.
@@ -295,12 +298,27 @@ public open class BotConfiguration { // open for Java
     // Device
     ///////////////////////////////////////////////////////////////////////////
 
+    @JvmField
+    internal var accountSecrets: Boolean = true
+
+    /**
+     * 禁止保存 `account.secrets`.
+     *
+     * `account.secrets` 保存账号的会话信息。
+     * 它可加速登录过程，也可能可以减少出现验证码的次数。如果遇到一段时间后无法接收消息通知等同步问题时可尝试禁用。
+     *
+     * @since 2.11
+     */
+    public fun disableAccountSecretes() {
+        accountSecrets = false
+    }
+
     /**
      * 设备信息覆盖. 在没有手动指定时将会通过日志警告, 并使用随机设备信息.
      * @see fileBasedDeviceInfo 使用指定文件存储设备信息
      * @see randomDeviceInfo 使用随机设备信息
      */
-    public var deviceInfo: ((Bot) -> DeviceInfo)? = deviceInfoStub // allows user to set `null` manually.
+    public final override var deviceInfo: ((Bot) -> DeviceInfo)? = deviceInfoStub // allows user to set `null` manually.
 
     /**
      * 使用随机设备信息.
@@ -320,21 +338,8 @@ public open class BotConfiguration { // open for Java
     @ConfigurationDsl
     public fun loadDeviceInfoJson(json: String) {
         deviceInfo = {
-            this.json.decodeFromString(DeviceInfo.serializer(), json)
+            DeviceInfoManager.deserialize(json, Companion.json)
         }
-    }
-
-    /**
-     * 使用文件存储设备信息.
-     *
-     * 此函数只在 JVM 和 Android 有效. 在其他平台将会抛出异常.
-     * @param filepath 文件路径. 默认是相对于 [workingDir] 的文件 "device.json".
-     * @see deviceInfo
-     */
-    @JvmOverloads
-    @ConfigurationDsl
-    public fun fileBasedDeviceInfo(filepath: String = "device.json") {
-        deviceInfo = getFileBasedDeviceInfoSupplier { workingDir.resolve(filepath) }
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -344,96 +349,29 @@ public open class BotConfiguration { // open for Java
     /**
      * 日志记录器
      *
-     * - 默认打印到标准输出, 通过 [MiraiLogger.create]
+     * - 默认打印到标准输出, 通过 [MiraiLogger.Factory.create]
      * - 忽略所有日志: [noBotLog]
      * - 重定向到一个目录: `botLoggerSupplier = { DirectoryLogger("Bot ${it.id}") }`
      * - 重定向到一个文件: `botLoggerSupplier = { SingleFileLogger("Bot ${it.id}") }`
      *
      * @see MiraiLogger
      */
-    public var botLoggerSupplier: ((Bot) -> MiraiLogger) = {
+    public final override var botLoggerSupplier: ((Bot) -> MiraiLogger) = {
         MiraiLogger.Factory.create(Bot::class, "Bot ${it.id}")
     }
 
     /**
      * 网络层日志构造器
      *
-     * - 默认打印到标准输出, 通过 [MiraiLogger.create]
+     * - 默认打印到标准输出, 通过 [MiraiLogger.Factory.create]
      * - 忽略所有日志: [noNetworkLog]
      * - 重定向到一个目录: `networkLoggerSupplier = { DirectoryLogger("Net ${it.id}") }`
      * - 重定向到一个文件: `networkLoggerSupplier = { SingleFileLogger("Net ${it.id}") }`
      *
      * @see MiraiLogger
      */
-    public var networkLoggerSupplier: ((Bot) -> MiraiLogger) = {
+    public final override var networkLoggerSupplier: ((Bot) -> MiraiLogger) = {
         MiraiLogger.Factory.create(Bot::class, "Net ${it.id}")
-    }
-
-
-    /**
-     * 重定向 [网络日志][networkLoggerSupplier] 到指定目录. 若目录不存在将会自动创建 ([File.mkdirs])
-     * 默认目录路径为 "$workingDir/logs/".
-     * @see DirectoryLogger
-     * @see redirectNetworkLogToDirectory
-     */
-    @JvmOverloads
-    @ConfigurationDsl
-    public fun redirectNetworkLogToDirectory(
-        dir: File = File("logs"),
-        retain: Long = 1.weeksToMillis,
-        identity: (bot: Bot) -> String = { "Net ${it.id}" }
-    ) {
-        require(!dir.isFile) { "dir must not be a file" }
-        networkLoggerSupplier = { DirectoryLogger(identity(it), workingDir.resolve(dir), retain) }
-    }
-
-    /**
-     * 重定向 [网络日志][networkLoggerSupplier] 到指定文件. 默认文件路径为 "$workingDir/mirai.log".
-     * 日志将会逐行追加到此文件. 若文件不存在将会自动创建 ([File.createNewFile])
-     * @see SingleFileLogger
-     * @see redirectNetworkLogToDirectory
-     */
-    @JvmOverloads
-    @ConfigurationDsl
-    public fun redirectNetworkLogToFile(
-        file: File = File("mirai.log"),
-        identity: (bot: Bot) -> String = { "Net ${it.id}" }
-    ) {
-        require(!file.isDirectory) { "file must not be a dir" }
-        networkLoggerSupplier = { SingleFileLogger(identity(it), workingDir.resolve(file)) }
-    }
-
-    /**
-     * 重定向 [Bot 日志][botLoggerSupplier] 到指定文件.
-     * 日志将会逐行追加到此文件. 若文件不存在将会自动创建 ([File.createNewFile])
-     * @see SingleFileLogger
-     * @see redirectBotLogToDirectory
-     */
-    @JvmOverloads
-    @ConfigurationDsl
-    public fun redirectBotLogToFile(
-        file: File = File("mirai.log"),
-        identity: (bot: Bot) -> String = { "Bot ${it.id}" }
-    ) {
-        require(!file.isDirectory) { "file must not be a dir" }
-        botLoggerSupplier = { SingleFileLogger(identity(it), workingDir.resolve(file)) }
-    }
-
-
-    /**
-     * 重定向 [Bot 日志][botLoggerSupplier] 到指定目录. 若目录不存在将会自动创建 ([File.mkdirs])
-     * @see DirectoryLogger
-     * @see redirectBotLogToFile
-     */
-    @JvmOverloads
-    @ConfigurationDsl
-    public fun redirectBotLogToDirectory(
-        dir: File = File("logs"),
-        retain: Long = 1.weeksToMillis,
-        identity: (bot: Bot) -> String = { "Bot ${it.id}" }
-    ) {
-        require(!dir.isFile) { "dir must not be a file" }
-        botLoggerSupplier = { DirectoryLogger(identity(it), workingDir.resolve(dir), retain) }
     }
 
     /**
@@ -445,6 +383,7 @@ public open class BotConfiguration { // open for Java
         networkLoggerSupplier = { _ -> SilentLogger }
     }
 
+
     /**
      * 不显示 [Bot] 日志. 不推荐.
      * @see botLoggerSupplier 更多日志处理方式
@@ -453,6 +392,7 @@ public open class BotConfiguration { // open for Java
     public fun noBotLog() {
         botLoggerSupplier = { _ -> SilentLogger }
     }
+
 
     /**
      * 是否显示过于冗长的事件日志
@@ -468,24 +408,7 @@ public open class BotConfiguration { // open for Java
     //////////////////////////////////////////////////////////////////////////
 
     /**
-     * 缓存数据目录, 相对于 [workingDir].
-     *
-     * 缓存目录保存的内容均属于不稳定的 Mirai 内部数据, 请不要手动修改它们. 清空缓存不会影响功能. 只会导致一些操作如读取全部群列表要重新进行.
-     * 默认启用的缓存可以加快登录过程.
-     *
-     * 注意: 这个目录只存储能在 [BotConfiguration] 配置的内容, 即包含:
-     * - 联系人列表
-     * - 登录服务器列表
-     * - 资源服务秘钥
-     *
-     * 其他内容如通过 [InputStream] 发送图片时的缓存使用 [FileCacheStrategy], 默认使用系统临时文件且会在关闭时删除文件.
-     *
-     * @since 2.4
-     */
-    public var cacheDir: File = File("cache")
-
-    /**
-     * 联系人信息缓存配置. 将会保存在 [cacheDir] 中 `contacts` 目录
+     * 联系人信息缓存配置. 将会保存在 `cacheDir` 中 `contacts` 目录
      * @since 2.4
      */
     public var contactListCache: ContactListCache = ContactListCache()
@@ -523,6 +446,7 @@ public open class BotConfiguration { // open for Java
         public var groupMemberListCacheEnabled: Boolean = false
     }
 
+
     /**
      * 配置 [ContactListCache]
      * ```
@@ -548,6 +472,7 @@ public open class BotConfiguration { // open for Java
         contactListCache.groupMemberListCacheEnabled = false
     }
 
+
     /**
      * 启用好友列表和群成员列表的缓存.
      * @since 2.4
@@ -557,6 +482,7 @@ public open class BotConfiguration { // open for Java
         contactListCache.friendListCacheEnabled = true
         contactListCache.groupMemberListCacheEnabled = true
     }
+
 
     /**
      * 登录缓存.
@@ -580,8 +506,6 @@ public open class BotConfiguration { // open for Java
     public fun copy(): BotConfiguration {
         return BotConfiguration().also { new ->
             // To structural order
-            new.workingDir = workingDir
-            new.json = json
             new.parentCoroutineContext = parentCoroutineContext
             new.heartbeatPeriodMillis = heartbeatPeriodMillis
             new.heartbeatTimeoutMillis = heartbeatTimeoutMillis
@@ -592,13 +516,15 @@ public open class BotConfiguration { // open for Java
             new.loginSolver = loginSolver
             new.protocol = protocol
             new.highwayUploadCoroutineCount = highwayUploadCoroutineCount
+            new.accountSecrets = accountSecrets
             new.deviceInfo = deviceInfo
             new.botLoggerSupplier = botLoggerSupplier
             new.networkLoggerSupplier = networkLoggerSupplier
-            new.cacheDir = cacheDir
             new.contactListCache = contactListCache
             new.convertLineSeparator = convertLineSeparator
             new.isShowingVerboseEventLog = isShowingVerboseEventLog
+
+            applyMppCopy(new)
         }
     }
 
@@ -622,6 +548,20 @@ public open class BotConfiguration { // open for Java
         /** 默认的配置实例. 可以进行修改 */
         @JvmStatic
         public val Default: BotConfiguration = BotConfiguration()
+
+        /**
+         * Json 序列化器, 使用 'kotlinx.serialization'
+         */
+        internal val json: Json = kotlin.runCatching {
+            Json {
+                isLenient = true
+                ignoreUnknownKeys = true
+                prettyPrint = true
+            }
+        }.getOrElse {
+            @Suppress("JSON_FORMAT_REDUNDANT_DEFAULT") // compatible for older versions
+            (Json {})
+        }
     }
 }
 
@@ -644,4 +584,32 @@ internal val deviceInfoStub: (Bot) -> DeviceInfo = {
 
 private val logger by lazy {
     MiraiLogger.Factory.create(BotConfiguration::class)
+}
+
+/** @since 2.15.0 */
+@MiraiInternalApi
+public interface InternalProtocolDataExchange {
+    @MiraiInternalApi
+    public interface InternalProtocolData {
+        public val isQRLoginSupported: Boolean
+        public val isNudgeSupported: Boolean
+        public val mainVersion: String
+        public val buildVersion: String
+        public val sdkVersion: String
+    }
+
+    @MiraiInternalApi
+    public fun of(protocol: BotConfiguration.MiraiProtocol): InternalProtocolData
+
+    @MiraiInternalApi
+    public companion object {
+        internal val instance by lazy {
+            Mirai // ensure service loaded
+
+            loadService(
+                InternalProtocolDataExchange::class,
+                "net.mamoe.mirai.internal.utils.MiraiProtocolInternal\$Exchange"
+            )
+        }
+    }
 }

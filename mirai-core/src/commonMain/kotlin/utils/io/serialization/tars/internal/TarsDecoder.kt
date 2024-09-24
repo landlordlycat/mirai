@@ -11,6 +11,7 @@
 
 package net.mamoe.mirai.internal.utils.io.serialization.tars.internal
 
+import io.ktor.utils.io.core.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.descriptors.*
@@ -21,29 +22,30 @@ import kotlinx.serialization.modules.SerializersModule
 import net.mamoe.mirai.internal.utils.io.serialization.tars.Tars
 import net.mamoe.mirai.internal.utils.io.serialization.tars.TarsId
 import net.mamoe.mirai.utils.MiraiLogger
-import java.io.PrintStream
 
 internal class DebugLogger(
-    val out: PrintStream?
+    val out: Output?
 ) {
     var structureHierarchy: Int = 0
 
     fun println(message: Any?) {
-        out?.println("    ".repeat(structureHierarchy) + message)
+        out?.appendLine("    ".repeat(structureHierarchy) + message)
     }
 
     fun println() {
-        out?.println()
+        out?.appendLine()
     }
 
     inline fun println(lazyMessage: () -> String) {
-        out?.println("    ".repeat(structureHierarchy) + lazyMessage())
+        out?.appendLine("    ".repeat(structureHierarchy) + lazyMessage())
     }
 }
 
 @OptIn(InternalSerializationApi::class, ExperimentalSerializationApi::class)
 internal class TarsDecoder(
-    val input: TarsInput, override val serializersModule: SerializersModule, val debugLogger: DebugLogger
+    val input: TarsInput,
+    override val serializersModule: SerializersModule,
+    val debugLogger: DebugLogger,
 ) : TaggedDecoder<TarsTag>() {
     override fun SerialDescriptor.getTag(index: Int): TarsTag {
         val annotations = this.getElementAnnotations(index)
@@ -228,6 +230,7 @@ internal class TarsDecoder(
 
     companion object {
         val logger = MiraiLogger.Factory.create(TarsDecoder::class, "TarsDecoder")
+
     }
 
     override fun beginStructure(descriptor: SerialDescriptor): CompositeDecoder {

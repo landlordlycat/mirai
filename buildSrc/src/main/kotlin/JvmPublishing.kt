@@ -1,10 +1,10 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
- *  此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
- *  Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
  *
- *  https://github.com/mamoe/mirai/blob/master/LICENSE
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
 @file:Suppress(
@@ -20,13 +20,11 @@ import org.gradle.api.tasks.bundling.Jar
 import org.gradle.kotlin.dsl.get
 import org.gradle.kotlin.dsl.getByName
 import org.gradle.kotlin.dsl.register
+import java.io.File
 
 fun Project.configureRemoteRepos() {
     tasks.register("ensureMavenCentralAvailable") {
         doLast {
-            if (GpgSigner.signer == GpgSigner.NoopSigner) {
-                error("GPG Signer isn't available.")
-            }
             val keys = SecretKeys.getCache(project)
             if (!keys.loadKey("sonatype").isValid) {
                 error("Maven Central isn't available.")
@@ -38,6 +36,15 @@ fun Project.configureRemoteRepos() {
         // sonatype
         val keys = SecretKeys.getCache(project)
         repositories {
+            maven {
+                name = "MiraiStageRepo"
+                val stageRepoLoc = getLocalProperty("publishing.stage-repo")?.let(::File)
+                    ?.takeIf { it.exists() }
+                    ?: rootProject.file("ci-release-helper/stage-repo")
+
+                url = stageRepoLoc.also { it.mkdirs() }.toURI()
+            }
+
             if (System.getenv("MIRAI_IS_SNAPSHOTS_PUBLISHING")?.toBoolean() == true) {
                 maven {
                     name = "MiraiRepo"
@@ -63,7 +70,7 @@ fun Project.configureRemoteRepos() {
                     }
                 }
             } else {
-                println("SonaType is not available")
+                logger.info("Sonatype is not available, Maven Central repository is not configured")
             }
         }
     }
@@ -74,17 +81,20 @@ inline fun Project.configurePublishing(
     artifactId: String,
     vcs: String = "https://github.com/mamoe/mirai",
     addProjectComponents: Boolean = true,
-    setupGpg: Boolean = true,
+    skipPublicationSetup: Boolean = false,
+    addShadowJar: Boolean = true
 ) {
     configureRemoteRepos()
 
-    val shadowJar = if (!addProjectComponents) null else tasks.register<ShadowJar>("shadowJar") {
+    if (skipPublicationSetup) return
+
+    val shadowJar = if (!addProjectComponents || !addShadowJar) null else tasks.register<ShadowJar>("shadowJar") {
         archiveClassifier.set("all")
         manifest.inheritFrom(tasks.getByName<Jar>("jar").manifest)
         from(project.sourceSets["main"].output)
-        configurations = mutableListOf(
-            project.configurations.findByName("runtimeClasspath") ?: project.configurations["runtime"]
-        )
+        configurations =
+            listOfNotNull(project.configurations.findByName("runtimeClasspath") ?: project.configurations["runtime"])
+
         exclude("META-INF/INDEX.LIST", "META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "module-info.class")
     }
 
@@ -115,9 +125,6 @@ inline fun Project.configurePublishing(
                 stubJavadoc?.get()?.let { artifact(it) }
                 shadowJar?.get()?.let { artifact(it) }
             }
-        }
-        if (setupGpg) {
-            configGpgSign(this@configurePublishing)
         }
     }
 }

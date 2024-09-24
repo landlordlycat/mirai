@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -10,9 +10,8 @@
 
 package net.mamoe.mirai.console.util
 
-import net.mamoe.mirai.console.MiraiConsoleImplementation
 import net.mamoe.mirai.console.command.CommandSender
-import net.mamoe.mirai.console.command.ConsoleCommandSender
+import net.mamoe.mirai.console.command.SystemCommandSender
 import net.mamoe.mirai.console.util.AnsiMessageBuilder.Companion.asAnsiMessageBuilder
 import net.mamoe.mirai.console.util.AnsiMessageBuilder.Companion.dropAnsi
 import net.mamoe.mirai.contact.Contact
@@ -98,11 +97,10 @@ public open class AnsiMessageBuilder public constructor(
         /**
          * 判断 [sender] 是否支持带 ansi 控制符的正确显示
          */
-        @ConsoleExperimentalApi
         @JvmStatic
         public fun isAnsiSupported(sender: CommandSender): Boolean =
-            if (sender is ConsoleCommandSender) {
-                MiraiConsoleImplementation.getInstance().isAnsiSupported
+            if (sender is SystemCommandSender) {
+                sender.isAnsiSupported
             } else false
 
         /**
@@ -118,8 +116,7 @@ public open class AnsiMessageBuilder public constructor(
         if (other == null) return false
         if (other::class.java != this::class.java) return false
         other as AnsiMessageBuilder
-        if (other.delegate != this.delegate) return false
-        return true
+        return other.delegate == this.delegate
     }
 
     /////////////////////////////////////////////////////////////////////////////////
@@ -227,7 +224,7 @@ private val DROP_ANSI_PATTERN = """\u001b[\u0040–\u005F]""".toRegex()
 
 private object Color {
     const val RESET = "\u001b[0m"
-    const val WHITE = "\u001b[30m"
+    const val WHITE = "\u001b[97m"
     const val RED = "\u001b[31m"
     const val EMERALD_GREEN = "\u001b[32m"
     const val GOLD = "\u001b[33m"

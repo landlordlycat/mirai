@@ -11,7 +11,6 @@
 
 package net.mamoe.mirai.console.extension
 
-import net.mamoe.mirai.console.extensions.SingletonExtensionSelector
 import net.mamoe.mirai.console.util.ConsoleExperimentalApi
 import net.mamoe.mirai.utils.DeprecatedSinceMirai
 import kotlin.reflect.KClass
@@ -39,8 +38,13 @@ public abstract class AbstractExtensionPoint<T : Extension>(
 /**
  * 表示一个 [SingletonExtension] 的 [ExtensionPoint]
  */
-@Deprecated("Please use InstanceExtensionPoint instead.", replaceWith = ReplaceWith("InstanceExtensionPoint"))
-@DeprecatedSinceMirai(warningSince = "2.11")
+@Suppress("DEPRECATION_ERROR")
+@Deprecated(
+    "Please use InstanceExtensionPoint instead.",
+    replaceWith = ReplaceWith("InstanceExtensionPoint"),
+    level = DeprecationLevel.HIDDEN
+)
+@DeprecatedSinceMirai(warningSince = "2.11", errorSince = "2.13", hiddenSince = "2.14")
 public interface SingletonExtensionPoint<T : SingletonExtension<*>> : ExtensionPoint<T>
 
 /**
@@ -61,54 +65,18 @@ public abstract class AbstractInstanceExtensionPoint<E : InstanceExtension<T>, T
 @ConsoleExperimentalApi
 public constructor(
     extensionType: KClass<E>
-) : AbstractExtensionPoint<E>(extensionType) {
-
-    /**
-     * @since 2.10
-     */
-    @Deprecated(
-        "Default(builtin) implementations are not allowed any more. " +
-                "For plugin authors, provide them with lower priority when plugin being loaded(through the ComponentScope). " +
-                "For frontend implementers, provide them by `BackendAccess.globalComponentScope.contribute`. ",
-        replaceWith = ReplaceWith("AbstractInstanceExtensionPoint(extensionType)"),
-        level = DeprecationLevel.ERROR,
-    )
-    @DeprecatedSinceMirai(errorSince = "2.11") // for removal
-    @ConsoleExperimentalApi
-    public constructor(
-        extensionType: KClass<E>,
-        /**
-         * 内建的实现列表.
-         */
-        builtinImplementations: () -> E,
-    ) : this(extensionType)
-
-    /**
-     * @since 2.0
-     */
-    @Deprecated(
-        "Default(builtin) implementations are not allowed any more. " +
-                "For plugin authors, provide them with lower priority when plugin being loaded(through the ComponentScope). " +
-                "For frontend implementers, provide them by `BackendAccess.globalComponentScope.contribute`. ",
-        replaceWith = ReplaceWith("AbstractInstanceExtensionPoint(extensionType)"),
-        level = DeprecationLevel.ERROR
-    )
-    @DeprecatedSinceMirai(errorSince = "2.11") // for removal
-    @ConsoleExperimentalApi // was experimental since 2.0
-    public constructor(extensionType: KClass<E>, vararg builtinImplementations: E) : this(
-        extensionType,
-    )
-}
+) : AbstractExtensionPoint<E>(extensionType)
 
 @Deprecated(
     "Please use AbstractInstanceExtensionPoint instead.",
     replaceWith = ReplaceWith(
         "AbstractInstanceExtension",
         "net.mamoe.mirai.console.extension.AbstractInstanceExtensionPoint"
-    )
+    ),
+    level = DeprecationLevel.HIDDEN
 )
-@DeprecatedSinceMirai(warningSince = "2.11")
-@Suppress("DEPRECATION")
+@DeprecatedSinceMirai(warningSince = "2.11", errorSince = "2.13", hiddenSince = "2.14")
+@Suppress("DEPRECATION", "DEPRECATION_ERROR")
 public abstract class AbstractSingletonExtensionPoint<E : SingletonExtension<T>, T>
 /**
  * @since 2.10
@@ -134,7 +102,7 @@ constructor(
     )
 
     /**
-     * 由 [SingletonExtensionSelector] 选择后的实例.
+     * 由 [net.mamoe.mirai.console.extensions.SingletonExtensionSelector] 选择后的实例.
      */
     @ConsoleExperimentalApi
     public open val selectedInstance: T

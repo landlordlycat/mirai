@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -12,14 +12,15 @@
 
 package net.mamoe.mirai.console
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.*
 import me.him188.kotlin.dynamic.delegation.dynamicDelegation
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.BotFactory
+import net.mamoe.mirai.auth.BotAuthorization
 import net.mamoe.mirai.console.MiraiConsole.INSTANCE
 import net.mamoe.mirai.console.MiraiConsoleImplementation.Companion.start
 import net.mamoe.mirai.console.extensions.BotConfigurationAlterer
+import net.mamoe.mirai.console.fontend.ProcessProgress
 import net.mamoe.mirai.console.internal.MiraiConsoleImplementationBridge
 import net.mamoe.mirai.console.internal.extension.GlobalComponentStorage
 import net.mamoe.mirai.console.plugin.PluginManager
@@ -128,8 +129,17 @@ public interface MiraiConsole : CoroutineScope {
         get() = throw UnsupportedOperationException("PluginCenter is not supported yet")
 
     /**
-     * 创建一个 logger
+     * 创建一个 logger. 已弃用. 请使用 [MiraiLogger.Factory.create].
      */
+    @Deprecated(
+        "Please use the standard way in mirai-core to create loggers, i.e. MiraiLogger.Factory.INSTANCE.create()",
+        level = DeprecationLevel.ERROR,
+        replaceWith = ReplaceWith(
+            "MiraiLogger.Factory.create(yourClass::class, identity)",
+            "net.mamoe.mirai.utils.MiraiLogger"
+        ),
+    )
+    @DeprecatedSinceMirai(warningSince = "2.13", errorSince = "2.14") // for removal
     @ConsoleExperimentalApi
     public fun createLogger(identity: String?): MiraiLogger
 
@@ -149,7 +159,10 @@ public interface MiraiConsole : CoroutineScope {
      *
      * 对象以 [bridge][MiraiConsoleImplementationBridge] 实现, 将会桥接特定前端实现的 [MiraiConsoleImplementation] 到 [MiraiConsole].
      */
-    public companion object INSTANCE : MiraiConsole by dynamicDelegation({ MiraiConsoleImplementation.getBridge() }) {
+    public companion object INSTANCE : MiraiConsole by dynamicDelegation({
+        @OptIn(ConsoleFrontEndImplementation::class)
+        MiraiConsoleImplementation.getBridge()
+    }) {
         /**
          * 获取 [MiraiConsole] 的 [Job]
          */ // MiraiConsole.INSTANCE.getJob()
@@ -182,8 +195,31 @@ public interface MiraiConsole : CoroutineScope {
         public fun addBot(id: Long, password: ByteArray, configuration: BotConfiguration.() -> Unit = {}): Bot =
             addBotImpl(id, password, configuration)
 
-        @Suppress("UNREACHABLE_CODE")
-        private fun addBotImpl(id: Long, password: Any, configuration: BotConfiguration.() -> Unit = {}): Bot {
+        /**
+         * 添加一个 [Bot] 实例到全局 Bot 列表, 但不登录.
+         *
+         * 调用 [Bot.login] 可登录.
+         *
+         * @see Bot.instances 获取现有 [Bot] 实例列表
+         * @see BotConfigurationAlterer ExtensionPoint
+         */
+        @ConsoleExperimentalApi("This is a low-level API and might be removed in the future.")
+        public fun addBot(
+            id: Long,
+            authorization: BotAuthorization,
+            configuration: BotConfiguration.() -> Unit = {}
+        ): Bot = addBotImpl(id, authorization, configuration)
+
+        @OptIn(ConsoleFrontEndImplementation::class)
+        private fun addBotImpl(id: Long, authorization: Any, configuration: BotConfiguration.() -> Unit = {}): Bot {
+            when (authorization) {
+                is String -> {}
+                is ByteArray -> {}
+                is BotAuthorization -> {}
+
+                else -> throw IllegalArgumentException("Bad authorization type: `${authorization.javaClass.name}`. Require String, ByteArray or BotAuthorization")
+            }
+
             var config = BotConfiguration().apply {
 
                 workingDir = MiraiConsole.rootDir
@@ -204,6 +240,7 @@ public interface MiraiConsole : CoroutineScope {
                             mainLogger.verbose { "Renaming $deviceInfoInWorkingDir to $deviceInWorkingDir" }
                             deviceInfoInWorkingDir.renameTo(deviceInWorkingDir)
                         }
+
                         deviceInRoot.exists() -> {
                             // copy root/device.json to bots/id/device.json
                             mainLogger.verbose { "Coping $deviceInRoot to $deviceInWorkingDir" }
@@ -229,16 +266,53 @@ public interface MiraiConsole : CoroutineScope {
                 extension.alterConfiguration(id, acc)
             }
 
-            return when (password) {
-                is ByteArray -> BotFactory.newBot(id, password, config)
-                is String -> BotFactory.newBot(id, password, config)
-                else -> throw IllegalArgumentException("Bad password type: `${password.javaClass.name}`. Require ByteArray or String")
+            return when (authorization) {
+                is ByteArray -> BotFactory.newBot(id, authorization, config)            // pwd md5
+                is String -> BotFactory.newBot(id, authorization, config)               // pwd
+                is BotAuthorization -> BotFactory.newBot(id, authorization, config)     // authorization
+                else -> error("assert")
             }
         }
 
         @ConsoleExperimentalApi("This is a low-level API and might be removed in the future.")
         public val isActive: Boolean
             get() = job.isActive
+
+        /**
+         * 停止 Console 运行
+         *
+         * Console 会在一个合适的时间进行关闭, 并不是调用马上关闭 Console
+         */
+        @ConsoleExperimentalApi
+        @JvmStatic
+        public fun shutdown() {
+            val consoleJob = job
+            if (!consoleJob.isActive) return
+            @OptIn(DelicateCoroutinesApi::class, ConsoleFrontEndImplementation::class)
+            GlobalScope.launch {
+                MiraiConsoleImplementation.shutdown()
+            }
+        }
+
+        /**
+         * 创建一个新的处理进度, 此进度将会在前端显示, 并且此进度需要[手动关闭][ProcessProgress.close]
+         *
+         * 注: 此 API 应该只在以下情况使用
+         *
+         * - 插件初始化 (包括 onLoad, onEnable)
+         * - 命令执行中 (控制台)
+         *
+         * 在其他情况使用可能会导致意外的情况
+         *
+         * // implementation note:
+         * 在 Terminal 前端中, 有处理进度存在时会停止命令输入 (即停止命令执行)
+         */
+        @ConsoleExperimentalApi
+        @JvmStatic
+        public fun newProcessProgress(): ProcessProgress {
+            @OptIn(ConsoleFrontEndImplementation::class)
+            return MiraiConsoleImplementation.getInstance().createNewProcessProgress()
+        }
     }
 
 

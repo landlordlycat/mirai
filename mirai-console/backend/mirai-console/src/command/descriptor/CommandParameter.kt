@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -9,6 +9,7 @@
 
 package net.mamoe.mirai.console.command.descriptor
 
+import net.mamoe.mirai.console.command.CommandContext
 import net.mamoe.mirai.console.command.CommandSender
 import net.mamoe.mirai.console.command.descriptor.AbstractCommandValueParameter.UserDefinedType.Companion.createOptional
 import net.mamoe.mirai.console.command.descriptor.AbstractCommandValueParameter.UserDefinedType.Companion.createRequired
@@ -111,10 +112,12 @@ public sealed class ArgumentAcceptance(
     public object Impossible : ArgumentAcceptance(-1)
 
     public companion object {
+        @OptIn(ConsoleExperimentalApi::class)
         @JvmStatic
         public val ArgumentAcceptance.isAcceptable: Boolean
             get() = acceptanceLevel > 0
 
+        @OptIn(ConsoleExperimentalApi::class)
         @JvmStatic
         public val ArgumentAcceptance.isNotAcceptable: Boolean
             get() = acceptanceLevel <= 0
@@ -122,21 +125,48 @@ public sealed class ArgumentAcceptance(
 }
 
 @ExperimentalCommandDescriptors
-public data class CommandReceiverParameter<T : CommandSender>(
-    override val isOptional: Boolean,
-    override val type: KType,
-) : CommandParameter<T>, AbstractCommandParameter<T>() {
-    override val name: String get() = NAME
+public sealed class CommandReceiverParameter<T> : CommandParameter<T>, AbstractCommandParameter<T>() {
 
-    init {
-        val classifier = type.classifier
-        require(classifier is KClass<*>) {
-            "CommandReceiverParameter.type.classifier must be KClass."
-        }
-        require(classifier.isSubclassOf(CommandSender::class)) {
-            "CommandReceiverParameter.type.classifier must be subclass of CommandSender."
+    /**
+     * @since 2.12
+     */
+    @ExperimentalCommandDescriptors
+    public class Sender(
+        override val isOptional: Boolean,
+        override val type: KType,
+    ) : CommandReceiverParameter<CommandSender>() {
+        init {
+            val classifier = type.classifier
+            require(classifier is KClass<*>) {
+                "CommandReceiverParameter.Sender.type.classifier must be KClass."
+            }
+            require(classifier.isSubclassOf(CommandSender::class)) {
+                "CommandReceiverParameter.Sender.type.classifier must be subclass of CommandSender."
+            }
         }
     }
+
+    /**
+     * @since 2.12
+     */
+    @ExperimentalCommandDescriptors
+    public class Context(
+        override val isOptional: Boolean,
+        override val type: KType = typeOf<CommandContext>(),
+    ) : CommandReceiverParameter<CommandContext>() {
+        init {
+            val classifier = type.classifier
+            require(classifier is KClass<*>) {
+                "CommandReceiverParameter.Context.type.classifier must be KClass."
+            }
+            require(classifier.isSubclassOf(CommandContext::class)) {
+                "CommandReceiverParameter.Context.type.classifier must be subclass of CommandContext."
+            }
+        }
+    }
+
+    override val name: String get() = NAME
+
 
     public companion object {
         public const val NAME: String = "<receiver>"
@@ -146,6 +176,15 @@ public data class CommandReceiverParameter<T : CommandSender>(
 
 internal val ANY_TYPE = typeOf<Any>()
 internal val ARRAY_OUT_ANY_TYPE = typeOf<Array<out Any?>>()
+internal val BASE_ARRAY_TYPES = mapOf(
+    typeOf<ByteArray>() to typeOf<Byte>(),
+    typeOf<CharArray>() to typeOf<Char>(),
+    typeOf<ShortArray>() to typeOf<Short>(),
+    typeOf<IntArray>() to typeOf<Int>(),
+    typeOf<LongArray>() to typeOf<Long>(),
+    typeOf<FloatArray>() to typeOf<Float>(),
+    typeOf<DoubleArray>() to typeOf<Double>()
+)
 
 @ExperimentalCommandDescriptors
 public sealed class AbstractCommandValueParameter<T> : CommandValueParameter<T>, AbstractCommandParameter<T>() {
@@ -162,8 +201,9 @@ public sealed class AbstractCommandValueParameter<T> : CommandValueParameter<T>,
         commandArgumentContext: CommandArgumentContext?
     ): ArgumentAcceptance {
         if (isVararg) {
-            val arrayElementType = this.type.arguments.single() // Array<T>
-            return acceptingImpl(arrayElementType.type ?: ANY_TYPE, argument, commandArgumentContext)
+            // BaseArray or Array<T>
+            val arrayElementType = BASE_ARRAY_TYPES[this.type] ?: this.type.arguments.single().type
+            return acceptingImpl(arrayElementType ?: ANY_TYPE, argument, commandArgumentContext)
         }
 
         return acceptingImpl(this.type, argument, commandArgumentContext)
@@ -221,7 +261,6 @@ public sealed class AbstractCommandValueParameter<T> : CommandValueParameter<T>,
         }
 
         private companion object {
-            @OptIn(ExperimentalStdlibApi::class)
             val STRING_TYPE = typeOf<String>()
         }
     }
@@ -243,7 +282,7 @@ public sealed class AbstractCommandValueParameter<T> : CommandValueParameter<T>,
                 "type.classifier must be KClass."
             }
             if (isVararg)
-                check(type.isSubtypeOf(ARRAY_OUT_ANY_TYPE)) {
+                check(type.isSubtypeOf(ARRAY_OUT_ANY_TYPE) || type in BASE_ARRAY_TYPES) {
                     "type must be subtype of Array if vararg. Given $type."
                 }
         }
@@ -251,13 +290,11 @@ public sealed class AbstractCommandValueParameter<T> : CommandValueParameter<T>,
         public companion object {
             @JvmStatic
             public inline fun <reified T : Any> createOptional(name: String, isVararg: Boolean): UserDefinedType<T> {
-                @OptIn(ExperimentalStdlibApi::class)
                 return UserDefinedType(name, true, isVararg, typeOf<T>())
             }
 
             @JvmStatic
             public inline fun <reified T : Any> createRequired(name: String, isVararg: Boolean): UserDefinedType<T> {
-                @OptIn(ExperimentalStdlibApi::class)
                 return UserDefinedType(name, false, isVararg, typeOf<T>())
             }
         }

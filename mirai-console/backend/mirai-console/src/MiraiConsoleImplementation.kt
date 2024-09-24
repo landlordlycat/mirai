@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -22,11 +22,14 @@ import net.mamoe.mirai.console.data.PluginConfig
 import net.mamoe.mirai.console.data.PluginData
 import net.mamoe.mirai.console.data.PluginDataStorage
 import net.mamoe.mirai.console.extension.ComponentStorage
+import net.mamoe.mirai.console.fontend.DefaultLoggingProcessProgress
+import net.mamoe.mirai.console.fontend.ProcessProgress
 import net.mamoe.mirai.console.internal.MiraiConsoleImplementationBridge
 import net.mamoe.mirai.console.internal.command.CommandManagerImpl
 import net.mamoe.mirai.console.internal.data.builtins.ConsoleDataScopeImpl
 import net.mamoe.mirai.console.internal.logging.LoggerControllerImpl
 import net.mamoe.mirai.console.internal.plugin.BuiltInJvmPluginLoaderImpl
+import net.mamoe.mirai.console.internal.plugin.impl
 import net.mamoe.mirai.console.internal.pluginManagerImpl
 import net.mamoe.mirai.console.logging.LoggerController
 import net.mamoe.mirai.console.plugin.Plugin
@@ -34,11 +37,9 @@ import net.mamoe.mirai.console.plugin.jvm.JvmPluginLoader
 import net.mamoe.mirai.console.plugin.loader.PluginLoader
 import net.mamoe.mirai.console.util.ConsoleExperimentalApi
 import net.mamoe.mirai.console.util.ConsoleInput
+import net.mamoe.mirai.console.util.ConsoleInternalApi
 import net.mamoe.mirai.message.data.Message
-import net.mamoe.mirai.utils.BotConfiguration
-import net.mamoe.mirai.utils.LoginSolver
-import net.mamoe.mirai.utils.MiraiLogger
-import net.mamoe.mirai.utils.NotStableForInheritance
+import net.mamoe.mirai.utils.*
 import java.nio.file.Path
 import java.util.*
 import java.util.concurrent.locks.ReentrantLock
@@ -171,9 +172,16 @@ public interface MiraiConsoleImplementation : CoroutineScope {
      */
     public val commandManager: CommandManager
 
+    @ConsoleExperimentalApi
     public val dataStorageForJvmPluginLoader: PluginDataStorage
+
+    @ConsoleExperimentalApi
     public val configStorageForJvmPluginLoader: PluginDataStorage
+
+    @ConsoleExperimentalApi
     public val dataStorageForBuiltIns: PluginDataStorage
+
+    @ConsoleExperimentalApi
     public val configStorageForBuiltIns: PluginDataStorage
 
     /**
@@ -211,13 +219,11 @@ public interface MiraiConsoleImplementation : CoroutineScope {
      */
     public fun createLoginSolver(requesterBot: Long, configuration: BotConfiguration): LoginSolver
 
-    /**
-     * 创建一个 [MiraiLogger].
-     *
-     * **注意**: [MiraiConsole] 会将 [net.mamoe.mirai.utils.MiraiLogger.setDefaultLoggerCreator] 设置为 `MiraiConsole::createLogger`.
-     * 因此不要在 [createLogger] 中调用 [net.mamoe.mirai.utils.MiraiLogger.create]
-     */
-    public fun createLogger(identity: String?): MiraiLogger
+    /** @see [MiraiConsole.newProcessProgress] */
+    public fun createNewProcessProgress(): ProcessProgress {
+        return DefaultLoggingProcessProgress()
+    }
+
 
     /**
      * 该前端是否支持使用 Ansi 输出彩色信息
@@ -229,6 +235,7 @@ public interface MiraiConsoleImplementation : CoroutineScope {
     /**
      * 前端预先定义的 [LoggerController], 以允许前端使用自己的配置系统
      */
+    @ConsoleExperimentalApi
     public val loggerController: LoggerController get() = LoggerControllerImpl()
 
     ///////////////////////////////////////////////////////////////////////////
@@ -261,7 +268,10 @@ public interface MiraiConsoleImplementation : CoroutineScope {
     @ConsoleFrontEndImplementation
     @NotStableForInheritance
     public interface ConsoleDataScope {
+        @ConsoleExperimentalApi
         public val dataHolder: AutoSavePluginDataHolder
+
+        @ConsoleExperimentalApi
         public val configHolder: AutoSavePluginDataHolder
         public fun addAndReloadConfig(config: PluginConfig)
 
@@ -293,6 +303,7 @@ public interface MiraiConsoleImplementation : CoroutineScope {
              */
             public inline fun <reified T : PluginData> ConsoleDataScope.get(): T = get(T::class)
 
+            @ConsoleExperimentalApi
             @JvmStatic
             public fun createDefault(
                 coroutineContext: CoroutineContext,
@@ -353,7 +364,7 @@ public interface MiraiConsoleImplementation : CoroutineScope {
          * @since 2.10.0-RC
          */
         public fun createDefaultJvmPluginLoader(coroutineContext: CoroutineContext): JvmPluginLoader =
-            BuiltInJvmPluginLoaderImpl(coroutineContext)
+            BuiltInJvmPluginLoaderImpl(coroutineContext + MiraiConsole.pluginManager.impl.coroutineContext.job)
 
         /**
          * @since 2.10.0-RC
@@ -372,6 +383,41 @@ public interface MiraiConsoleImplementation : CoroutineScope {
 
 
     ///////////////////////////////////////////////////////////////////////////
+    // Logging
+    ///////////////////////////////////////////////////////////////////////////
+
+    /**
+     * 创建一个 [MiraiLogger.Factory].
+     *
+     * @since 2.13
+     */
+    public fun createLoggerFactory(context: FrontendLoggingInitContext): MiraiLogger.Factory
+
+    /**
+     * 前端 [MiraiLogger.Factory] 加载的上下文
+     *
+     * 全局的日志工厂的初始化可以分为如下几步
+     *
+     * 1. 接管 stdout (见 [System.setOut]), 将 stdout 重定向至屏幕.
+     *    之后平台日志实现会将日志通过被接管的 stdout 输出至屏幕
+     * 2. 前端返回 [platformImplementation][acquirePlatformImplementation] 或者返回适配的 [MiraiLogger.Factory]
+     */
+    @ConsoleFrontEndImplementation
+    public interface FrontendLoggingInitContext {
+        /**
+         * 平台的日志实现, 这可能是使用 SLF4J 等日志框架转接的实例.
+         *
+         * 调用此函数会立即初始化平台日志实现. 在未完成准备工作前切勿使用此方法
+         */
+        public fun acquirePlatformImplementation(): MiraiLogger.Factory
+
+        /**
+         * 在完成 [MiraiLogger.Factory] 接管后马上执行 [action]
+         */
+        public fun invokeAfterInitialization(action: () -> Unit)
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
     // ConsoleLaunchOptions
     ///////////////////////////////////////////////////////////////////////////
 
@@ -379,13 +425,11 @@ public interface MiraiConsoleImplementation : CoroutineScope {
      * Console 启动参数, 修改参数会改变默认行为
      * @since 2.10.0-RC
      */
-    @ConsoleExperimentalApi
     public class ConsoleLaunchOptions {
         @JvmField
         public var crashWhenPluginLoadFailed: Boolean = false
     }
 
-    @ConsoleExperimentalApi
     public val consoleLaunchOptions: ConsoleLaunchOptions
         get() = ConsoleLaunchOptions()
 
@@ -396,10 +440,33 @@ public interface MiraiConsoleImplementation : CoroutineScope {
             override val resolvedPlugins: MutableList<Plugin> get() = MiraiConsole.pluginManagerImpl.resolvedPlugins
         }
 
+        internal suspend fun shutdown() {
+            val bridge = currentBridge ?: return
+            if (!bridge.isActive) return
+            bridge.shutdownDaemon.tryStart()
+
+            Bot.instances.forEach { bot ->
+                lateinit var logger: MiraiLogger
+                kotlin.runCatching {
+                    logger = bot.logger
+                    bot.closeAndJoin()
+                }.onFailure { t ->
+                    kotlin.runCatching { logger.error("Error in closing bot", t) }
+                }
+            }
+            MiraiConsole.job.cancelAndJoin()
+        }
+
         init {
-            Runtime.getRuntime().addShutdownHook(thread(false) {
+            Runtime.getRuntime().addShutdownHook(thread(false, name = "Mirai Console Shutdown Hook") {
                 if (instanceInitialized) {
-                    runBlocking { MiraiConsole.job.cancelAndJoin() }
+                    try {
+                        runBlocking {
+                            shutdown()
+                        }
+                    } catch (_: InterruptedException) {
+
+                    }
                 }
             })
         }
@@ -427,6 +494,7 @@ public interface MiraiConsoleImplementation : CoroutineScope {
             currentBridge ?: throw UninitializedPropertyAccessException()
 
         /** 由前端调用, 初始化 [MiraiConsole] 实例并启动 */
+        @OptIn(ConsoleInternalApi::class)
         @JvmStatic
         @ConsoleFrontEndImplementation
         @Throws(MalformedMiraiConsoleImplementationError::class)

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -7,13 +7,19 @@
  * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
+@file:OptIn(ConsoleFrontEndImplementation::class)
+
 package net.mamoe.mirai.console.internal.plugin
 
+import net.mamoe.mirai.console.ConsoleFrontEndImplementation
+import net.mamoe.mirai.console.MiraiConsoleImplementation
 import net.mamoe.mirai.console.MiraiConsoleImplementation.ConsoleDataScope.Companion.get
+import net.mamoe.mirai.console.fontend.ProcessProgress
 import net.mamoe.mirai.console.internal.MiraiConsoleBuildDependencies
 import net.mamoe.mirai.console.internal.data.builtins.DataScope
 import net.mamoe.mirai.console.internal.data.builtins.PluginDependenciesConfig
 import net.mamoe.mirai.console.plugin.PluginManager
+import net.mamoe.mirai.console.util.renderMemoryUsageNumber
 import net.mamoe.mirai.utils.MiraiLogger
 import net.mamoe.mirai.utils.debug
 import net.mamoe.mirai.utils.verbose
@@ -37,11 +43,11 @@ import org.eclipse.aether.resolution.DependencyRequest
 import org.eclipse.aether.resolution.DependencyResult
 import org.eclipse.aether.spi.connector.RepositoryConnectorFactory
 import org.eclipse.aether.spi.connector.transport.TransporterFactory
-import org.eclipse.aether.spi.locator.ServiceLocator
 import org.eclipse.aether.transfer.AbstractTransferListener
 import org.eclipse.aether.transfer.TransferEvent
 import org.eclipse.aether.transport.http.HttpTransporterFactory
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 
 @Suppress("DEPRECATION", "MemberVisibilityCanBePrivate")
@@ -50,16 +56,14 @@ internal class JvmPluginDependencyDownloader(
 ) {
     val repositories: MutableList<RemoteRepository>
     val session: RepositorySystemSession
-    val locator: ServiceLocator
+    val locator: org.eclipse.aether.spi.locator.ServiceLocator
     val repository: RepositorySystem
-    val dependencyFilter: DependencyFilter = DependencyFilter { node, parents ->
+    val dependencyFilter: DependencyFilter = DependencyFilter { node, _ ->
         if (node == null || node.artifact == null) return@DependencyFilter true
 
         val artGroup = node.artifact.groupId
         val artId = node.artifact.artifactId
 
-        // mirai used netty-all
-        if (artGroup == "io.netty") return@DependencyFilter false
 
         if (artGroup == "net.mamoe") {
             if (artId in listOf(
@@ -74,8 +78,16 @@ internal class JvmPluginDependencyDownloader(
                     "mirai-core-utils-android",
                     "mirai-console",
                     "mirai-console-terminal",
+                    "mirai-console-frontend-base",
+                    "mirai-console-compiler-annotations",
+                    "mirai-console-compiler-annotations-jvm",
                 )
             ) return@DependencyFilter false
+        }
+
+        // Re-download slf4j-api is unnecessary since slf4j-api was bound by console
+        if (artGroup == "org.slf4j" && artId == "slf4j-api") {
+            return@DependencyFilter false
         }
 
         // Loaded by console system
@@ -97,14 +109,60 @@ internal class JvmPluginDependencyDownloader(
             session, LocalRepository(PluginManager.pluginLibrariesFolder)
         )
         session.transferListener = object : AbstractTransferListener() {
+            private val dwnProgresses: MutableMap<File, ProcessProgress> = ConcurrentHashMap()
+
             override fun transferStarted(event: TransferEvent) {
                 logger.verbose {
                     "Downloading ${event.resource?.repositoryUrl}${event.resource?.resourceName}"
+                }
+                val nw = MiraiConsoleImplementation.getInstance().createNewProcessProgress()
+                dwnProgresses.put(
+                    event.resource.file, nw
+                )?.close()
+                nw.setTotalSize(event.resource.contentLength)
+                nw.updateText("Downloading ${event.resource.resourceName}....")
+            }
+
+            override fun transferSucceeded(event: TransferEvent) {
+                dwnProgresses.remove(event.resource.file)?.let { dp ->
+                    dp.updateText(buildString {
+                        append("Downloaded  ")
+                        append(event.resource.resourceName)
+                        append(" (")
+                        renderMemoryUsageNumber(this@buildString, event.resource.contentLength)
+                        append(")")
+                    })
+                    dp.close()
+                }
+            }
+
+            override fun transferProgressed(event: TransferEvent) {
+                dwnProgresses[event.resource.file]?.let { pg ->
+                    pg.update(event.transferredBytes)
+                    pg.updateText(buildString bs@{
+                        append("Downloading ")
+                        append(event.resource.resourceName)
+                        append(" (")
+                        val sz = this@bs.length
+                        renderMemoryUsageNumber(this@bs, event.transferredBytes)
+                        repeat(kotlin.math.max(0, 7 - (this@bs.length - sz))) {
+                            append(' ')
+                        }
+
+                        append(" / ")
+                        renderMemoryUsageNumber(this@bs, event.resource.contentLength)
+                        append(")")
+                    })
+                    pg.rerender()
                 }
             }
 
             override fun transferFailed(event: TransferEvent) {
                 logger.warning(event.exception)
+                dwnProgresses.remove(event.resource.file)?.let {
+                    it.markFailed()
+                    it.close()
+                }
             }
         }
         val userHome = System.getProperty("user.home")
@@ -152,7 +210,12 @@ internal class JvmPluginDependencyDownloader(
         }
 
         fun findGradleDepCache(): File {
-            return File(userHome, ".gradle/caches/modules-2/files-2.1")
+            var gradleHome = File(userHome, ".gradle")
+            val gradleEnvHome = System.getenv("GRADLE_USER_HOME").orEmpty()
+            if (gradleEnvHome.isNotBlank()) {
+                gradleHome = File(gradleEnvHome)
+            }
+            return File(gradleHome, "caches/modules-2/files-2.1")
         }
 
         val mavenLocRepo = findMavenLocal()
@@ -199,13 +262,13 @@ internal class JvmPluginDependencyDownloader(
         repositories = repository.newResolutionRepositories(
             session,
             config.repoLoc.map { url ->
-                RemoteRepository.Builder(null, "default", url).build()
+                RemoteRepository.Builder(url, "default", url).build()
             }
         )
         logger.debug { "Remote server: " + config.repoLoc }
     }
 
-    public fun resolveDependencies(deps: Collection<String>, vararg filters: DependencyFilter): DependencyResult {
+    fun resolveDependencies(deps: Iterable<String>, vararg filters: DependencyFilter): DependencyResult {
 
         val dependencies: MutableList<Dependency> = ArrayList()
         for (library in deps) {

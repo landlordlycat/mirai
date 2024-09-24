@@ -1,29 +1,30 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
  *
- *  此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
- *  Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
  *
- *  https://github.com/mamoe/mirai/blob/master/LICENSE
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
  */
 
 @file:Suppress("unused")
 
 package net.mamoe.mirai.contact
 
+import net.mamoe.mirai.message.data.AtAll
 import net.mamoe.mirai.message.data.Message
 import net.mamoe.mirai.message.data.messageChainOf
 import net.mamoe.mirai.utils.DeprecatedSinceMirai
 import net.mamoe.mirai.utils.MiraiInternalApi
 import net.mamoe.mirai.utils.millisToHumanReadableString
-import kotlin.time.ExperimentalTime
 
 /**
  * 发送消息时消息过长抛出的异常.
  *
  * @see Contact.sendMessage
  */
-public class MessageTooLargeException constructor(
+@OptIn(MiraiInternalApi::class)
+public class MessageTooLargeException(
     public override val target: Contact,
     /**
      * 原发送消息
@@ -43,14 +44,17 @@ public class MessageTooLargeException constructor(
  *
  * @see Group.sendMessage
  */
-@OptIn(ExperimentalTime::class)
+@OptIn(MiraiInternalApi::class)
 public class BotIsBeingMutedException @MiraiInternalApi constructor(
     // this constructor is since 2.9.0-RC
     public override val target: Group,
     originalMessage: Message,
 ) : SendMessageFailedException(target, Reason.BOT_MUTED, originalMessage) {
-    @DeprecatedSinceMirai(warningSince = "2.9")
-    @Deprecated("Deprecated without replacement. Please consider copy this exception to your code.")
+    @DeprecatedSinceMirai(warningSince = "2.9", errorSince = "2.11", hiddenSince = "2.12")
+    @Deprecated(
+        "Deprecated without replacement. Please consider copy this exception to your code.",
+        level = DeprecationLevel.HIDDEN
+    )
     // this constructor is since 2.0
     public constructor(
         target: Group,
@@ -72,8 +76,12 @@ public open class SendMessageFailedException @MiraiInternalApi constructor(
     public open val target: Contact,
     public val reason: Reason,
     public val originalMessage: Message,
+    /**
+     * @since 2.14
+     */
+    tips: String? = null,
 ) : RuntimeException(
-    "Failed sending message to $target, reason=$reason"
+    "Failed sending message to $target, reason=$reason. Tips: $tips"
 ) {
     public enum class Reason {
         /**
@@ -90,5 +98,17 @@ public open class SendMessageFailedException @MiraiInternalApi constructor(
          * 达到群每分钟发言次数限制
          */
         GROUP_CHAT_LIMITED,
+
+        /**
+         * 达到每日发送 [AtAll] 的次数限制
+         * @since 2.11
+         */
+        AT_ALL_LIMITED,
+
+        /**
+         * 被服务器限制发送消息, 可能是由冻结引起.
+         * @since 2.14
+         */
+        LIMITED_MESSAGING,
     }
 }

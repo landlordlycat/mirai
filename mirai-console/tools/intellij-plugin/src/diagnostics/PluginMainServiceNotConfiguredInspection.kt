@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 Mamoe Technologies and contributors.
+ * Copyright 2019-2022 Mamoe Technologies and contributors.
  *
  * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
  * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
@@ -11,7 +11,9 @@ package net.mamoe.mirai.console.intellij.diagnostics
 
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.progress.impl.CancellationCheck.Companion.runWithCancellationCheck
+import com.intellij.openapi.project.rootManager
 import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
@@ -21,13 +23,11 @@ import net.mamoe.mirai.console.compiler.common.resolve.PLUGIN_FQ_NAME
 import net.mamoe.mirai.console.intellij.diagnostics.fix.ConfigurePluginMainServiceFix
 import net.mamoe.mirai.console.intellij.resolve.allSuperNames
 import net.mamoe.mirai.console.intellij.resolve.hasAnnotation
-import org.jetbrains.kotlin.idea.inspections.AbstractKotlinInspection
-import org.jetbrains.kotlin.idea.debugger.readAction
-import org.jetbrains.kotlin.idea.util.*
+import org.jetbrains.kotlin.idea.base.util.module
+import org.jetbrains.kotlin.idea.codeinsight.api.classic.inspections.AbstractKotlinInspection
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtObjectDeclaration
 import org.jetbrains.kotlin.psi.classOrObjectVisitor
-import java.util.*
 
 /*
 private val bundle by lazy {
@@ -107,8 +107,9 @@ class PluginMainServiceNotConfiguredInspection : AbstractKotlinInspection() {
                 }
             }
             return@runWithCancellationCheck services.any { serviceFile ->
-                serviceFile.readAction { f ->
-                    f.inputStream.bufferedReader().use { reader -> reader.lineSequence().any { it == fqName } }
+                runReadAction {
+                    serviceFile.inputStream.bufferedReader()
+                        .use { reader -> reader.lineSequence().any { it == fqName } }
                 }
             }
         }
